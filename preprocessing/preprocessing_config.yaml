@@ -1,0 +1,34 @@
+# 로그 전처리 파이프라인 설정 파일
+
+# 로그 디렉토리 경로 (날짜별 분리된 파일 위치)
+log_directory: "logs/date_split"
+
+# 출력 디렉토리
+output_directory: "output"  # 전처리 결과 파일 저장 폴더
+
+# 출력 파일 경로 (상대 경로, output_directory 기준)
+output_path: "preprocessed_logs.json"
+
+# 세션화 방법: "trace_id" 또는 "sliding_window"
+sessionization_method: "sliding_window"
+
+# Sliding Window 설정
+window_size: 50          # 윈도우 크기 (로그 개수, 약 1분 분량)
+window_time: 180         # 윈도우 시간 (초, 3분)
+
+# 인코딩 설정
+max_seq_length: 256     # 최대 시퀀스 길이 (메모리 효율적)
+
+# Drain3 설정 파일 경로
+drain3_config_path: "drain3_config.yaml"
+
+# 메모리 효율성 설정
+stream_mode: true          # 스트리밍 모드 (세션 완성 시 즉시 파일에 저장, 메모리 절약)
+enable_correlation: true  # 날짜/시스템명 기반 관계 추적 (gateway, eureka, manager 등 연결)
+batch_by_date: true       # 날짜별 배치 처리 (메모리 효율적, 권장)
+date_filter: null         # 날짜 필터 (YYYY-MM-DD 형식, null이면 전체 처리)
+#date_filter: "2025-08-22"  # 특정 날짜만 처리하려면 주석 해제
+
+# 병렬 처리 설정
+parallel: true            # 병렬 처리 활성화 (날짜별 동시 처리)
+max_workers: 4           # 최대 동시 처리 프로세스 수

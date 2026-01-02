@@ -1,0 +1,61 @@
+# LogBERT 앙상블 학습 설정
+
+# 앙상블 설정
+ensemble:
+  method: "weighted_average"  # 'weighted_average', 'average', 'max'
+  weights: [0.4, 0.4, 0.2]   # 각 모델의 가중치 (합이 1이 되도록)
+  
+  models:
+    # 모델 1: DistilBERT (빠르고 효율적)
+    - type: "distilbert"
+      pretrained_model: "distilbert-base-uncased"
+      vocab_size: 10000
+    
+    # 모델 2: BERT-base (균형잡힌 성능)
+    - type: "bert"
+      pretrained_model: "bert-base-uncased"
+      vocab_size: 10000
+    
+    # 모델 3: RoBERTa (높은 성능)
+    - type: "roberta"
+      pretrained_model: "roberta-base"
+      vocab_size: 10000
+    
+    # 모델 4: DeepLog (LSTM 기반, 시퀀스 특화) - 선택사항
+    # - type: "deeplog"
+    #   vocab_size: 10000
+    #   embedding_dim: 128
+    #   hidden_size: 128
+    #   num_layers: 2
+    
+    # 모델 5: TCN (컨볼루션 기반) - 선택사항
+    # - type: "tcn"
+    #   vocab_size: 10000
+    #   embedding_dim: 128
+    #   num_channels: [128, 128, 128]
+    #   kernel_size: 3
+
+# 학습 설정
+training:
+  batch_size: 4              # 작은 배치 (여러 모델 동시 학습)
+  learning_rate: 0.00001      # 작은 학습률
+  weight_decay: 0.01
+  num_epochs: 3               # 적은 에폭
+  total_steps: 5000
+  min_lr: 0.000001
+  max_grad_norm: 1.0
+  mask_prob: 0.15
+  log_interval: 50
+  save_interval: 500
+  num_workers: 0             # 단일 프로세스
+
+# 데이터 설정
+data:
+  preprocessed_dir: "../preprocessing/output"
+  max_seq_length: 256
+  sample_ratio: 0.05          # 5% 데이터
+  max_files: 10               # 10개 파일
+
+# 출력 설정
+output_dir: "checkpoints_ensemble"
+

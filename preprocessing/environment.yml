@@ -1,0 +1,14 @@
+name: radar
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    - drain3>=0.9.0
+    - PyYAML>=6.0
+    # 향후 확장용 (필요시 주석 해제)
+    # - pandas>=1.5.0
+    # - numpy>=1.23.0
+

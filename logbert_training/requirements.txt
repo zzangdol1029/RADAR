@@ -1,0 +1,23 @@
+# LogBERT 학습 의존성
+
+# PyTorch (CUDA 지원)
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# Transformers (BERT 모델)
+transformers>=4.30.0
+
+# 데이터 처리
+numpy>=1.24.0
+tqdm>=4.65.0
+
+# 설정 파일
+PyYAML>=6.0
+
+# 시스템 리소스 모니터링
+psutil>=5.9.0
+
+# GPU 모니터링 (선택사항)
+# nvidia-ml-py3>=7.352.0
+

@@ -1,0 +1,23 @@
+# Drain3 템플릿 마이너 설정
+
+# 프로파일링 활성화 (성능 측정용, 프로덕션에서는 False 권장)
+profiling_enabled: false
+
+# 스냅샷 저장 간격 (분)
+snapshot_interval_minutes: 1
+
+# 유사도 임계값 (0.0 ~ 1.0, 낮을수록 더 엄격)
+drain_sim_th: 0.4
+
+# 트리 깊이 (로그 구조의 복잡도에 따라 조정)
+drain_depth: 4
+
+# 최대 자식 노드 수
+drain_max_children: 100
+
+# 최대 클러스터 수 (None이면 제한 없음)
+drain_max_clusters: null
+
+# 매칭 시 파라미터 추출
+param_str: "<*>"
+

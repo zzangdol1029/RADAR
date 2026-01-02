@@ -1,0 +1,68 @@
+# 로그 파일
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 가상 환경
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 전처리 결과 파일
+preprocessing/output/
+preprocessing/*.log
+preprocessed_logs*.json
+*_preprocessed.json
+*.json
+
+# 임시 파일
+*.tmp
+*.bak
+*.cache
+
+# 모델 체크포인트 파일 (용량이 매우 큼)
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.pb
+checkpoints/
+checkpoints_transfer/
+
+# 로그 파일 (추가)
+*.nohup
+*.log.nohup
+*.pid
+

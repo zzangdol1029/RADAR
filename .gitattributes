@@ -1,0 +1,12 @@
+# Git LFS로 추적할 파일 패턴
+preprocessing/output/preprocessed_logs_*.json filter=lfs diff=lfs merge=lfs -text
+
+
+# Git LFS로 추적할 파일 패턴
+preprocessing/output/preprocessed_logs_*.json filter=lfs diff=lfs merge=lfs -text
+
+
+
+
+
+
