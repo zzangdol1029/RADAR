@@ -2,18 +2,35 @@
 
 SCP(Secure Copy)를 사용하여 서버에 파일을 업로드하는 방법을 안내합니다.
 
+## 🚀 빠른 시작
+
+### 방법 1: 자동 업로드 스크립트 사용 (가장 쉬움)
+
+프로젝트 루트에 있는 `upload_to_server.sh` 스크립트를 사용하세요:
+
+```bash
+# 기본 사용 (서버 정보를 스크립트 내에서 수정 필요)
+./upload_to_server.sh
+
+# 또는 명령줄 인자로 지정
+./upload_to_server.sh 사용자명 서버주소 /서버/경로
+
+# 예시
+./upload_to_server.sh user 192.168.1.100 /home/user/RADAR
+```
+
 ## 📦 업로드할 파일 목록
 
 ### 필수 파일들
 
 ```bash
 # Python 스크립트
-logbert_training/train_transfer.py
-logbert_training/dataset.py
-logbert_training/__init__.py
-
-# 실행 스크립트
-logbert_training/run_progressive_training.sh
+logbert_training/train_server.py          # 서버 학습 스크립트 (새로 추가됨)
+logbert_training/run_training_server.sh   # 실행 스크립트 (새로 추가됨)
+logbert_training/train.py                 # 학습 모듈
+logbert_training/dataset.py               # 데이터셋 클래스
+logbert_training/model.py                 # 모델 정의
+logbert_training/__init__.py              # Python 패키지 초기화
 
 # 의존성
 logbert_training/requirements.txt
@@ -21,7 +38,7 @@ logbert_training/requirements.txt
 
 ### 선택 파일
 ```bash
-logbert_training/training_config.yaml
+logbert_training/training_config.yaml     # 학습 설정 파일
 ```
 
 ### 데이터 파일 (별도 업로드 필요)
@@ -121,7 +138,7 @@ scp -i ~/.ssh/id_rsa -r logbert_training user@example.com:/home/user/RADAR/
 cd /서버/경로/logbert_training
 
 # 2. 실행 권한 부여
-chmod +x run_progressive_training.sh
+chmod +x run_training_server.sh
 
 # 3. 의존성 설치
 pip install -r requirements.txt
@@ -133,42 +150,67 @@ pip install -r requirements.txt
 ls -la ../preprocessing/output/preprocessed_logs_*.json
 
 # 5. 학습 실행
-./run_progressive_training.sh
+./run_training_server.sh
+# 또는
+python train_server.py
 ```
+
+### 새로운 서버 학습 스크립트 사용
+
+새로 추가된 `train_server.py`와 `run_training_server.sh`를 사용하면 더 쉽게 학습할 수 있습니다:
+
+```bash
+# 기본 실행
+./run_training_server.sh
+
+# 커스텀 옵션
+python train_server.py --batch-size 64 --epochs 20
+```
+
+자세한 내용은 `SERVER_TRAINING_GUIDE.md`를 참고하세요.
 
 ## 📋 한 번에 실행하는 스크립트
 
-로컬에서 다음 스크립트를 만들어서 실행할 수 있습니다:
+프로젝트 루트에 `upload_to_server.sh` 스크립트가 있습니다. 이 스크립트는 다음을 수행합니다:
+
+1. 서버 연결 테스트
+2. 서버에 필요한 디렉토리 생성
+3. `logbert_training` 디렉토리 전체 업로드
+4. `preprocessing/output` 디렉토리 업로드
+
+### 스크립트 사용법
 
 ```bash
-#!/bin/bash
-# upload_to_server.sh
+# 실행 권한 부여 (처음 한 번만)
+chmod +x upload_to_server.sh
 
-# 서버 정보 설정
-SERVER_USER="사용자명"
-SERVER_HOST="서버주소"
-SERVER_PATH="/서버/경로"
+# 기본 사용 (스크립트 내 서버 정보 수정 필요)
+./upload_to_server.sh
 
-# 로컬 경로
-LOCAL_PATH="/Users/zzangdol/RADAR"
+# 명령줄 인자로 서버 정보 지정
+./upload_to_server.sh 사용자명 서버주소 /서버/경로
 
-echo "서버에 파일 업로드 중..."
+# 예시
+./upload_to_server.sh user 192.168.1.100 /home/user/RADAR
+```
 
-# logbert_training 디렉토리 업로드
-echo "1. logbert_training 디렉토리 업로드..."
-scp -r ${LOCAL_PATH}/logbert_training ${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}/
+### 스크립트 수정하기
 
-# 데이터 파일 업로드
-echo "2. 데이터 파일 업로드..."
-scp -r ${LOCAL_PATH}/preprocessing/output ${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}/preprocessing/
+스크립트를 열어서 기본 서버 정보를 수정할 수 있습니다:
 
-echo "업로드 완료!"
-echo ""
-echo "서버에서 다음 명령어를 실행하세요:"
-echo "  cd ${SERVER_PATH}/logbert_training"
-echo "  chmod +x run_progressive_training.sh"
-echo "  pip install -r requirements.txt"
-echo "  ./run_progressive_training.sh"
+```bash
+# upload_to_server.sh 파일 편집
+nano upload_to_server.sh
+
+# 또는
+vim upload_to_server.sh
+```
+
+다음 부분을 수정하세요:
+```bash
+SERVER_USER="${1:-user}"           # 기본 사용자명
+SERVER_HOST="${2:-192.168.1.100}"  # 기본 서버 주소
+SERVER_PATH="${3:-/home/user/RADAR}"  # 기본 서버 경로
 ```
 
 ## ⚠️ 주의사항

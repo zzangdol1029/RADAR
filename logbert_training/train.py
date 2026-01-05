@@ -38,7 +38,16 @@ class LogBERTTrainer:
         """
         self.config = config
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        logger.info(f"사용 디바이스: {self.device}")
+        
+        # 멀티 GPU 설정
+        self.use_multi_gpu = config.get('training', {}).get('use_multi_gpu', True)
+        self.num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        
+        if self.num_gpus > 1 and self.use_multi_gpu:
+            logger.info(f"멀티 GPU 모드: {self.num_gpus}개 GPU 사용")
+            logger.info(f"사용 디바이스: cuda (GPU 0-{self.num_gpus-1})")
+        else:
+            logger.info(f"사용 디바이스: {self.device}")
         
         # 출력 디렉토리
         self.output_dir = Path(config.get('output_dir', 'checkpoints'))
@@ -47,6 +56,12 @@ class LogBERTTrainer:
         # 모델 초기화
         self.model = create_logbert_model(config['model'])
         self.model.to(self.device)
+        
+        # 멀티 GPU로 모델 래핑
+        if self.num_gpus > 1 and self.use_multi_gpu:
+            logger.info(f"DataParallel로 {self.num_gpus}개 GPU에 모델 배포 중...")
+            self.model = nn.DataParallel(self.model)
+            logger.info("✅ 멀티 GPU 설정 완료")
         
         # 옵티마이저 (학습률을 float로 변환)
         learning_rate = float(config['training']['learning_rate'])
@@ -109,6 +124,10 @@ class LogBERTTrainer:
             
             loss = outputs['loss']
             
+            # 멀티 GPU에서 loss가 텐서인 경우 스칼라로 변환
+            if isinstance(loss, torch.Tensor) and loss.dim() > 0:
+                loss = loss.mean()
+            
             # Backward pass
             self.optimizer.zero_grad()
             loss.backward()
@@ -158,8 +177,11 @@ class LogBERTTrainer:
         """체크포인트 저장"""
         checkpoint_path = self.checkpoint_dir / f'{name}.pt'
         
+        # DataParallel 모델인 경우 module을 통해 접근
+        model_state_dict = self.model.module.state_dict() if isinstance(self.model, nn.DataParallel) else self.model.state_dict()
+        
         checkpoint = {
-            'model_state_dict': self.model.state_dict(),
+            'model_state_dict': model_state_dict,
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'global_step': self.global_step,
@@ -174,7 +196,12 @@ class LogBERTTrainer:
         """체크포인트 로드"""
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
         
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+        # DataParallel 모델인 경우 module을 통해 접근
+        if isinstance(self.model, nn.DataParallel):
+            self.model.module.load_state_dict(checkpoint['model_state_dict'])
+        else:
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+        
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         self.global_step = checkpoint['global_step']
@@ -194,8 +221,13 @@ class LogBERTTrainer:
         logger.info(f"에폭당 배치 수: {total_batches:,}")
         logger.info(f"예상 총 스텝: {estimated_total_steps:,}")
         logger.info(f"배치 크기: {self.config['training']['batch_size']}")
+        if self.num_gpus > 1 and self.use_multi_gpu:
+            per_gpu_batch = self.config['training']['batch_size'] // self.num_gpus
+            logger.info(f"  → 각 GPU당 배치 크기: {per_gpu_batch} (총 {self.num_gpus}개 GPU)")
         logger.info(f"학습률: {self.config['training']['learning_rate']}")
         logger.info(f"디바이스: {self.device}")
+        if self.num_gpus > 1 and self.use_multi_gpu:
+            logger.info(f"멀티 GPU: {self.num_gpus}개 GPU 사용 중")
         logger.info(f"체크포인트 저장 경로: {self.checkpoint_dir}")
         logger.info("=" * 80)
         

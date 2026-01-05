@@ -5,7 +5,7 @@ BERT 기반의 로그 이상 탐지 모델
 
 import torch
 import torch.nn as nn
-from transformers import BertConfig, BertModel, BertForMaskedLM
+from transformers import BertConfig, BertForMaskedLM
 from typing import Optional, Dict, Any
 import logging
 
