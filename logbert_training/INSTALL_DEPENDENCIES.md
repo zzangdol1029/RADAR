@@ -149,3 +149,5 @@ python3 -c "import transformers; print('Transformers:', transformers.__version__
 3. **CUDA 버전 확인**: `nvidia-smi`로 CUDA 버전 확인 후 맞는 PyTorch 설치
 
 
+
+

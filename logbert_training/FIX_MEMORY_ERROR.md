@@ -163,3 +163,5 @@ python3 train_server.py --config training_config_dgx.yaml --batch-size 64
 - [ ] 재실행
 - [ ] 로그 모니터링 (`tail -f logs/training_*.log`)
 
+
+

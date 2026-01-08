@@ -14,12 +14,16 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR
 from pathlib import Path
 from typing import Dict, Any, Optional
 import logging
+import warnings
 from tqdm import tqdm
 import numpy as np
 from datetime import datetime
 
 from model import create_logbert_model
 from dataset import LogBERTDataset, create_dataloader
+
+# DataParallel 관련 경고 억제 (정상 동작하므로 경고 불필요)
+warnings.filterwarnings('ignore', category=UserWarning, module='torch.nn.parallel._functions')
 
 logging.basicConfig(
     level=logging.INFO,

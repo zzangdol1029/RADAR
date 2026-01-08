@@ -178,3 +178,5 @@ python3 train_server.py --config training_config_dgx.yaml --batch-size 128
 
 **멀티 GPU를 사용하더라도 각 GPU당 배치 크기를 적절히 설정해야 합니다!**
 
+
+

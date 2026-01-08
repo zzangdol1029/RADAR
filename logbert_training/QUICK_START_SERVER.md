@@ -155,3 +155,5 @@ pip install -r requirements.txt
 3. **Conda 환경**: Conda 환경을 사용하면 `python` 명령어도 사용 가능합니다.
 
 
+
+
