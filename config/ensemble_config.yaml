@@ -1,0 +1,66 @@
+# 앙상블 이상 탐지 설정 파일
+
+ensemble:
+  # 앙상블 방법: weighted_average, average, max, min
+  method: "weighted_average"
+  
+  # 사용할 모델 목록
+  models:
+    # LogBERT 모델 (BERT 기반)
+    - type: "logbert"
+      name: "LogBERT"
+      checkpoint: "../logbert_training/checkpoints/best_model.pt"
+      weight: 0.4
+      enabled: true
+      
+    # DeepLog 모델 (LSTM 기반)
+    - type: "deeplog"
+      name: "DeepLog"
+      checkpoint: "../logbert_training/checkpoints/deeplog/best_model.pt"
+      weight: 0.3
+      enabled: true
+      
+    # LogLSTM 모델 (양방향 LSTM)
+    - type: "lstm"
+      name: "LogLSTM"
+      checkpoint: "../logbert_training/checkpoints/lstm/best_model.pt"
+      weight: 0.2
+      enabled: false  # 필요시 활성화
+      
+    # LogTCN 모델 (Temporal Convolutional Network)
+    - type: "tcn"
+      name: "LogTCN"
+      checkpoint: "../logbert_training/checkpoints/tcn/best_model.pt"
+      weight: 0.1
+      enabled: false  # 필요시 활성화
+
+  # 이상 임계값 설정
+  threshold:
+    auto: true  # 자동 계산 (평균 + 2*표준편차)
+    manual: 0.5  # 수동 설정 (auto가 false일 때 사용)
+    
+  # 배치 설정
+  batch_size: 32
+  
+  # 디바이스 설정
+  device: "cuda"  # "cuda" or "cpu" or null (자동)
+
+# 권장 앙상블 조합
+recommended_combinations:
+  # 조합 1: BERT + LSTM (권장, 빠른 구현)
+  combination_1:
+    models: ["logbert", "deeplog"]
+    weights: [0.6, 0.4]
+    description: "Transformer와 RNN의 장점 결합"
+    
+  # 조합 2: 3모델 앙상블 (균형)
+  combination_2:
+    models: ["logbert", "deeplog", "tcn"]
+    weights: [0.5, 0.3, 0.2]
+    description: "다양한 아키텍처 결합"
+    
+  # 조합 3: 전체 모델 (최고 성능)
+  combination_3:
+    models: ["logbert", "deeplog", "lstm", "tcn"]
+    weights: [0.4, 0.3, 0.2, 0.1]
+    description: "최대 다양성, 최고 성능"
