@@ -1,8 +1,28 @@
 # MSA 로그 전처리 가이드
 
+## ⚠️ 중요: 현재 로그 환경
+
+**실제 로그 분석 결과:**
+- ❌ 로그에 `trace_id` 필드가 **직접 포함되어 있지 않음**
+- ✅ Gateway 로그에는 `client_ip`, `access_time`, `method`, `url`, `status` 등 포함
+- ✅ Manager 로그는 일반 Spring Boot 로그 형식 (스레드명, 타임스탬프 등)
+
+**따라서 현재는 Trace ID 기반 세션화가 불가능합니다.**
+
+**대안 전략:**
+- ✅ **하이브리드 복합 키 기반 세션화** 사용 (현재 적용 중)
+- ✅ IP + URL + 시간 매칭으로 서비스 간 연결
+- 🔄 향후 Trace ID 추가 시 Trace ID 기반으로 전환 가능
+
+**최종 전처리 프로세스는 `FINAL_PREPROCESSING_GUIDE.md`를 참고하세요!**
+
+---
+
 ## 📋 개요
 
 MSA (Microservices Architecture) 환경에서 수집된 로그를 이상 탐지, 치명도 계산, RAG 시스템 구축을 위해 전처리하는 방법을 안내합니다.
+
+**⚠️ 참고:** 이 문서는 **이상적인 MSA 환경(Trace ID가 있는 경우)**을 가정한 가이드입니다. 현재 실제 로그 환경에서는 `FINAL_PREPROCESSING_GUIDE.md`의 하이브리드 복합 키 방식을 사용합니다.
 
 ### 대상 서비스
 - **Gateway**: API 게이트웨이
@@ -16,15 +36,22 @@ MSA (Microservices Architecture) 환경에서 수집된 로그를 이상 탐지,
 
 ## 🏗️ MSA 로그 특성
 
-### 1. 분산 추적 (Distributed Tracing)
+### 1. 분산 추적 (Distributed Tracing) - 이상적인 경우
 
-MSA 환경에서는 **Trace ID**를 통해 여러 서비스의 로그를 연결할 수 있습니다.
+**⚠️ 현재 로그에는 Trace ID가 없습니다!**
+
+MSA 환경에서는 **Trace ID**를 통해 여러 서비스의 로그를 연결할 수 있습니다 (이상적인 경우).
 
 ```
 Gateway → Research → Manager → Code
   ↓         ↓          ↓        ↓
-같은 Trace ID로 연결
+같은 Trace ID로 연결 (Trace ID가 있을 때만 가능)
 ```
+
+**현재 상황:**
+- Trace ID가 없으므로 복합 키 기반 연결 사용
+- Gateway: `client_ip` + `시간` + `url`
+- Manager: `user_ip_addr` + `url_addr` + `시간` (INSERT 로그에서)
 
 ### 2. 서비스 간 의존성
 
@@ -127,13 +154,25 @@ if cleaned_line:
 
 ---
 
-### 2단계: Trace ID 추출 및 연결
+### 2단계: Trace ID 추출 및 연결 (현재 미사용)
 
-#### 목적
+#### ⚠️ 현재 상황
+
+**Trace ID가 로그에 없으므로 이 단계는 현재 사용되지 않습니다.**
+
+**대신 사용하는 방식:**
+- 복합 키 기반 세션화 (Gateway: `client_ip` + `시간` + `url`)
+- 후처리 연결 단계에서 IP + URL + 시간 매칭
+
+**향후 Trace ID가 추가되면 이 방식으로 전환 가능합니다.**
+
+---
+
+#### 목적 (Trace ID가 있을 때)
 - MSA 환경에서 분산된 로그를 하나의 요청으로 연결
 - 서비스 간 호출 관계 파악
 
-#### Trace ID 추출 방법
+#### Trace ID 추출 방법 (참고용)
 
 **2.1 JSON 로그에서 추출**
 ```python
@@ -209,11 +248,24 @@ def extract_trace_id(log_line: str, service_name: str) -> Optional[str]:
 
 ### 3단계: 서비스별 세션화
 
+#### ⚠️ 현재 사용 방식
+
+**Trace ID가 없으므로 하이브리드 복합 키 기반 세션화를 사용합니다.**
+
+**현재 방식:**
+- Gateway: `client_ip` + `시간(초)` + `url` 기반 복합 키
+- Manager: `스레드명` + `시간(초)` 기반 복합 키
+- 각 복합 키별로 Sliding Window 적용
+
+**자세한 내용은 `FINAL_PREPROCESSING_GUIDE.md` 참고!**
+
+---
+
 #### 목적
 - 각 서비스의 로그를 세션 단위로 그룹화
 - Trace ID 기반 또는 시간 기반 세션화
 
-#### 3.1 Trace ID 기반 세션화 (권장)
+#### 3.1 Trace ID 기반 세션화 (향후 사용 가능)
 
 **장점:**
 - MSA 환경에 최적화
@@ -643,11 +695,73 @@ def preprocess_msa_logs(log_dir: Path, output_dir: Path):
 
 ---
 
+## 📝 현재 적용 방식 vs 이상적인 방식
+
+### 현재 적용 방식 (Trace ID 없음)
+
+**사용 중인 가이드:**
+- ✅ `FINAL_PREPROCESSING_GUIDE.md`: 하이브리드 복합 키 기반
+
+**방식:**
+1. 서비스별 독립 세션화 (복합 키 + Sliding Window)
+2. 메타데이터 추출 및 저장
+3. 후처리 연결 (IP + URL + 시간 매칭)
+
+**장점:**
+- ✅ 현재 로그 환경에서 즉시 사용 가능
+- ✅ 정확한 연결 가능 (IP + URL + 시간)
+- ✅ 실용적으로 충분한 수준
+
+**한계:**
+- ⚠️ 완벽한 분산 추적은 어려움
+- ⚠️ INSERT 로그가 없는 Manager 로그는 연결 어려움
+
+---
+
+### 이상적인 방식 (Trace ID 있음)
+
+**이 가이드에서 설명한 방식:**
+- Trace ID 기반 세션화
+- 완벽한 분산 추적
+
+**장점:**
+- ✅ 완벽한 MSA 분산 추적
+- ✅ 서비스 간 호출 관계 정확히 파악
+- ✅ 하나의 요청을 전체적으로 추적
+
+**전환 방법:**
+1. 애플리케이션에 Trace ID 로깅 추가 (Spring Cloud Sleuth 등)
+2. 모든 서비스에 적용
+3. 이 가이드의 Trace ID 기반 방식으로 전환
+
+---
+
 ## 📝 다음 단계
+
+### 현재 (Trace ID 없음)
+
+1. ✅ **하이브리드 복합 키 기반 전처리 구현** (완료)
+2. ✅ **메타데이터 추출 및 저장** (완료)
+3. ✅ **후처리 연결 구현** (완료)
+4. **연결 정확도 검증 및 최적화**
+
+**참고 문서:** `FINAL_PREPROCESSING_GUIDE.md`
+
+---
+
+### 향후 (Trace ID 추가 시)
 
 1. **Trace ID 추출 로직 구현**
 2. **MSA 세션화 클래스 구현**
 3. **컨텍스트 빌더 구현**
 4. **RAG 메타데이터 추출 구현**
 
-이 가이드를 바탕으로 MSA 로그 전처리를 구현하세요! 🚀
+**이 가이드를 바탕으로 Trace ID 기반 전처리로 전환하세요!** 🚀
+
+---
+
+## 🔗 관련 문서
+
+- **`FINAL_PREPROCESSING_GUIDE.md`**: 현재 적용 중인 하이브리드 복합 키 기반 전처리 가이드 ⭐
+- **`TRACE_ID_ALTERNATIVE_STRATEGY.md`**: Trace ID 대안 전략 (삭제됨, 내용은 FINAL 가이드에 통합)
+- **`ADVANCED_PREPROCESSING_GUIDE.md`**: 고급 전처리 기법

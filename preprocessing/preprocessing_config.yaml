@@ -9,10 +9,17 @@ output_directory: "output"  # 전처리 결과 파일 저장 폴더
 # 출력 파일 경로 (상대 경로, output_directory 기준)
 output_path: "preprocessed_logs.json"
 
-# 세션화 방법: "trace_id" 또는 "sliding_window"
-sessionization_method: "sliding_window"
+# 세션화 방법: "trace_id", "sliding_window", 또는 "hybrid"
+# - "trace_id": MSA 환경에서 Trace ID 기반 세션화 (trace_id가 있을 때 권장)
+# - "sliding_window": 시간/크기 기반 윈도우 세션화
+# - "hybrid": 복합 키 + Sliding Window 하이브리드 방식 (trace_id가 없을 때 권장)
+sessionization_method: "hybrid"  # 하이브리드 방식 (복합 키 + Sliding Window)
 
-# Sliding Window 설정
+# Trace ID 기반 세션화 설정 (sessionization_method: "trace_id"일 때 사용)
+trace_id_timeout: 300    # Trace ID 세션 타임아웃 (초, 5분)
+trace_id_max_size: 1000  # Trace ID당 최대 로그 수
+
+# Sliding Window 설정 (sessionization_method: "sliding_window"일 때 사용)
 window_size: 50          # 윈도우 크기 (로그 개수, 약 1분 분량)
 window_time: 180         # 윈도우 시간 (초, 3분)
 

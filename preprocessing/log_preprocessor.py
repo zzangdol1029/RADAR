@@ -234,7 +234,7 @@ class Sessionizer:
     def __init__(self, method: str = "sliding_window", window_size: int = 20, window_time: int = 300):
         """
         Args:
-            method: "trace_id" 또는 "sliding_window"
+            method: "trace_id", "sliding_window", 또는 "hybrid"
             window_size: Sliding Window의 로그 개수
             window_time: Sliding Window의 시간(초)
         """
@@ -244,6 +244,14 @@ class Sessionizer:
         self.trace_sessions = defaultdict(list)  # trace_id -> logs
         self.sliding_window = deque(maxlen=window_size)
         self.window_start_time = None
+        
+        # 하이브리드 방식용
+        if method == "hybrid":
+            self.composite_sessions = defaultdict(lambda: {
+                'logs': deque(maxlen=window_size),
+                'start_time': None
+            })
+            self.last_composite_key = None
     
     def extract_trace_id(self, log_line: str) -> Optional[str]:
         """로그에서 Trace ID 추출"""
@@ -273,6 +281,87 @@ class Sessionizer:
         
         return None
     
+    def extract_sys_log_sn(self, log_line: str) -> Optional[str]:
+        """시스템 로그 시퀀스 번호 추출 (Manager 서비스)"""
+        # TRACE 로그에서 binding parameter [13] 찾기
+        # binding parameter [13] as [BIGINT] - [402444152989233152]
+        pattern = r'binding parameter \[13\] as \[BIGINT\]\s*-\s*\[(\d+)\]'
+        match = re.search(pattern, log_line)
+        if match:
+            return match.group(1)
+        return None
+    
+    def extract_composite_key(self, log_data: Dict[str, Any]) -> Optional[str]:
+        """복합 키 추출: 서비스별로 다른 방식 사용"""
+        original = log_data.get('original', '')
+        service_name = log_data.get('service_name', 'unknown')
+        
+        # JSON 형식 로그에서 추출 (Gateway)
+        json_match = re.search(r'\{[^}]+\}', original)
+        if json_match:
+            try:
+                json_data = json.loads(json_match.group())
+                
+                # Gateway 로그: client_ip 기반 복합 키
+                if 'client_ip' in json_data:
+                    client_ip = json_data.get('client_ip', 'unknown')
+                    access_time = json_data.get('access_time', '')
+                    url = json_data.get('url', 'unknown')
+                    
+                    # 시간을 초 단위로 정규화
+                    if access_time:
+                        try:
+                            # "2025-08-07T13:52:43.250215074+09:00[Asia/Seoul]" -> "13:52:43"
+                            time_part = access_time.split('T')[1].split('.')[0]
+                        except:
+                            time_part = 'unknown'
+                    else:
+                        timestamp = self.extract_timestamp(original)
+                        time_part = timestamp.strftime('%H:%M:%S') if timestamp else 'unknown'
+                    
+                    # Gateway 복합 키: client_ip + 시간 + url
+                    return f"{client_ip}_{time_part}_{url}"
+                
+                # 다른 서비스의 JSON 로그 (client_ip 없음)
+                else:
+                    timestamp = self.extract_timestamp(original)
+                    if timestamp:
+                        time_part = timestamp.strftime('%H:%M:%S')
+                        # 로그 레벨 추출 시도
+                        level_match = re.search(r'\b(ERROR|WARN|INFO|DEBUG|TRACE)\b', original)
+                        log_pattern = level_match.group(1) if level_match else 'default'
+                        return f"{service_name}_{time_part}_{log_pattern}"
+            except:
+                pass
+        
+        # Manager 로그: 스레드명 기반 그룹화 (우선)
+        if service_name == 'manager':
+            timestamp = self.extract_timestamp(original)
+            if timestamp:
+                time_part = timestamp.strftime('%H:%M:%S')
+                
+                # 스레드명 추출
+                # 예: "2026-01-15 12:49:46.729 DEBUG org.hibernate.SQL --- [XNIO-1 task-1]"
+                thread_pattern = r'---\s+\[([^\]]+)\]'
+                thread_match = re.search(thread_pattern, original)
+                thread_name = thread_match.group(1) if thread_match else 'unknown'
+                
+                # 스레드명 + 시간 기반 복합 키 (로그 레벨 제거하여 같은 스레드의 모든 로그를 묶음)
+                # sys_log_sn은 메타데이터로만 저장하고, 세션 식별자로는 사용하지 않음
+                # 이유: sys_log_sn이 있는 로그([audit-1])와 비즈니스 로직 로그([XNIO-1 task-1])가 다른 스레드이기 때문
+                return f"{service_name}_{time_part}_{thread_name}"
+        
+        # 다른 서비스: 서비스명 + 시간 + 로그 패턴
+        timestamp = self.extract_timestamp(original)
+        if timestamp:
+            time_part = timestamp.strftime('%H:%M:%S')
+            # 로그 레벨 추출 시도
+            level_match = re.search(r'\b(ERROR|WARN|INFO|DEBUG|TRACE)\b', original)
+            log_pattern = level_match.group(1) if level_match else 'default'
+            return f"{service_name}_{time_part}_{log_pattern}"
+        
+        return None
+    
     def extract_timestamp(self, log_line: str) -> Optional[datetime]:
         """로그에서 타임스탬프 추출"""
         # Spring Boot 로그 형식: 2025-12-08 17:23:47.950
@@ -299,7 +388,55 @@ class Sessionizer:
         """
         completed_sessions = []
         
-        if self.method == "trace_id":
+        if self.method == "hybrid":
+            # 복합 키 추출
+            composite_key = self.extract_composite_key(log_data)
+            if not composite_key:
+                composite_key = 'default'
+            
+            # 복합 키 변경 감지 (이전 키와 다른 경우 이전 세션 완성)
+            if self.last_composite_key is not None and self.last_composite_key != composite_key:
+                # 이전 키의 세션 완성
+                prev_session_info = self.composite_sessions[self.last_composite_key]
+                if len(prev_session_info['logs']) > 0:
+                    completed_sessions.append(list(prev_session_info['logs']))
+                    prev_session_info['logs'].clear()
+                    prev_session_info['start_time'] = None
+            
+            # 현재 키의 세션 정보 가져오기
+            session_info = self.composite_sessions[composite_key]
+            
+            # 타임스탬프 추출
+            timestamp = self.extract_timestamp(log_data.get('original', ''))
+            
+            # 첫 로그인 경우 시작 시간 설정
+            if session_info['start_time'] is None and timestamp:
+                session_info['start_time'] = timestamp
+            
+            # Sliding Window 시간 체크
+            if timestamp and session_info['start_time']:
+                time_diff = (timestamp - session_info['start_time']).total_seconds()
+                if time_diff > self.window_time:
+                    # 시간 초과로 세션 완성
+                    if len(session_info['logs']) > 0:
+                        completed_sessions.append(list(session_info['logs']))
+                    session_info['logs'].clear()
+                    session_info['start_time'] = timestamp
+            
+            # 로그 추가
+            session_info['logs'].append(log_data)
+            
+            # Sliding Window 크기 체크
+            if len(session_info['logs']) >= self.window_size:
+                # 크기 도달로 세션 완성
+                completed_sessions.append(list(session_info['logs']))
+                session_info['logs'].clear()
+                session_info['start_time'] = None
+            
+            # 현재 키 저장
+            self.last_composite_key = composite_key
+        
+        elif self.method == "trace_id":
             trace_id = self.extract_trace_id(log_data.get('original', ''))
             if trace_id:
                 self.trace_sessions[trace_id].append(log_data)
@@ -343,7 +480,14 @@ class Sessionizer:
         """남은 세션들을 반환"""
         sessions = []
         
-        if self.method == "trace_id":
+        if self.method == "hybrid":
+            for composite_key, session_info in self.composite_sessions.items():
+                if len(session_info['logs']) > 0:
+                    sessions.append(list(session_info['logs']))
+            self.composite_sessions.clear()
+            self.last_composite_key = None
+        
+        elif self.method == "trace_id":
             for trace_id, logs in self.trace_sessions.items():
                 if len(logs) > 0:
                     sessions.append(logs)
@@ -437,7 +581,18 @@ class MetadataEnricher:
     def extract_service_name(log_file_path: str) -> str:
         """로그 파일 경로에서 서비스명 추출"""
         filename = os.path.basename(log_file_path)
-        service_name = filename.replace('.log', '')
+        # .log 확장자 제거
+        filename = filename.replace('.log', '')
+        
+        # 첫 번째 언더스코어 전까지 추출
+        # 예: "gateway_2025-08-13" -> "gateway"
+        # 예: "cert_250227_10_07_09" -> "cert"
+        # 예: "cert" -> "cert" (언더스코어가 없는 경우)
+        if '_' in filename:
+            service_name = filename.split('_')[0]
+        else:
+            service_name = filename
+        
         return service_name
     
     @staticmethod
