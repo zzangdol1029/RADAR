@@ -1,0 +1,29 @@
+# LogBERT Intel XPU 환경 의존성
+# Python 3.10.19
+# 설치 방법:
+# 1. conda create -n logbert_ipex python=3.10 -y
+# 2. conda activate logbert_ipex
+# 3. pip install -r requirements_intel_xpu.txt
+
+# PyTorch XPU 버전 (Intel GPU 지원)
+--index-url https://download.pytorch.org/whl/xpu
+torch==2.8.0+xpu
+torchvision==0.23.0+xpu
+torchaudio==2.8.0+xpu
+
+# Intel Extension for PyTorch (XPU)
+--extra-index-url https://pytorch-extension.intel.com/release-whl/stable/xpu/us/
+intel-extension-for-pytorch==2.8.10+xpu
+
+# 필수 의존성
+psutil>=7.2.0
+numpy>=2.2.0
+pyyaml>=6.0
+tqdm>=4.66.0
+transformers>=4.30.0
+
+# 데이터 처리
+pandas>=2.0.0
+
+# 로깅
+tensorboard>=2.14.0

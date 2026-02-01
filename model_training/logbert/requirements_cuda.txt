@@ -1,0 +1,25 @@
+# LogBERT NVIDIA CUDA 환경 의존성
+# GPU 서버용 (NVIDIA GPU)
+# Python 3.10 권장
+
+# PyTorch CUDA 버전 (NVIDIA GPU 지원)
+--index-url https://download.pytorch.org/whl/cu118
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# 필수 의존성
+numpy>=1.24.0
+pyyaml>=6.0
+tqdm>=4.66.0
+transformers>=4.30.0
+
+# 데이터 처리
+pandas>=2.0.0
+
+# 로깅 및 모니터링
+tensorboard>=2.14.0
+wandb  # (선택) Weights & Biases 실험 추적
+
+# 유틸리티
+psutil>=5.9.0

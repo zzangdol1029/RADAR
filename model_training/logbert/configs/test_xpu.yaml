@@ -1,0 +1,39 @@
+# LogBERT 중간 테스트 설정 (10개 파일) - Intel XPU 메모리 최적화
+# 환경: 로컬 PC (Intel Arc Graphics 16GB)
+# 목적: 중간 규모 검증 (1개 파일 테스트 성공 후)
+# 데이터: 최근 10개 파일
+# 예상 시간: ~20시간 (10배 데이터 × 2 epoch, batch 16 기준)
+
+# 모델 설정
+model:
+  vocab_size: 10000
+  hidden_size: 768
+  num_hidden_layers: 12
+  num_attention_heads: 12
+  intermediate_size: 3072
+  max_position_embeddings: 512
+  hidden_dropout_prob: 0.1
+  attention_probs_dropout_prob: 0.1
+
+# 학습 설정 (Intel Arc Graphics 메모리 최적화)
+training:
+  batch_size: 16             # 메모리 안정성 확보 (quick test 검증됨)
+  learning_rate: 0.00002     # 2e-5
+  weight_decay: 0.01
+  num_epochs: 2              # 10개 파일 × 2 epoch (균형잡힌 학습)
+  total_steps: 100000        # 충분한 warmup/decay 스케줄
+  min_lr: 0.000001           # 1e-6
+  max_grad_norm: 1.0
+  mask_prob: 0.15
+  log_interval: 50           # 적절한 로그 빈도
+  save_interval: 1000        # 체크포인트 저장 간격
+  num_workers: 0             # 메모리 절약 (quick test 검증됨)
+
+# 데이터 설정
+data:
+  preprocessed_dir: "../../../output"
+  max_seq_length: 512
+  limit_files: 10            # 10개 파일 테스트
+
+# 출력 설정
+output_dir: "../checkpoints_test_xpu"
