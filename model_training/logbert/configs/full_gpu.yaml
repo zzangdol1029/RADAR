@@ -31,7 +31,7 @@ training:
 
 # 데이터 설정
 data:
-  preprocessed_dir: "./output"  # GPU 서버에서 데이터 경로
+  preprocessed_dir: "/home/zzangdol/RADAR/preprocessing/output"  # GPU 서버에서 데이터 경로
   max_seq_length: 512
   limit_files: null          # null = 전체 파일 사용
 

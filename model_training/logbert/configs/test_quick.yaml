@@ -1,0 +1,39 @@
+# LogBERT 빠른 테스트 설정 (5개 파일)
+# 환경: 로컬 개발 환경
+# 목적: 코드 동작 확인 및 디버깅
+# 데이터: 최근 5개 파일만 사용
+# 예상 시간: 10-30분
+
+# 모델 설정
+model:
+  vocab_size: 10000
+  hidden_size: 768
+  num_hidden_layers: 6      # 테스트용으로 레이어 수 감소
+  num_attention_heads: 12
+  intermediate_size: 3072
+  max_position_embeddings: 512
+  hidden_dropout_prob: 0.1
+  attention_probs_dropout_prob: 0.1
+
+# 학습 설정
+training:
+  batch_size: 16             # 로컬 환경용
+  learning_rate: 0.00005     # 5e-5
+  weight_decay: 0.01
+  num_epochs: 1              # 빠른 테스트
+  total_steps: 10000
+  min_lr: 0.000001
+  max_grad_norm: 1.0
+  mask_prob: 0.15
+  log_interval: 50
+  save_interval: 1000
+  num_workers: 2             # 로컬 환경용
+
+# 데이터 설정
+data:
+  preprocessed_dir: "C:/RADAR/RADAR/preprocessing/output"
+  max_seq_length: 512
+  limit_files: 5             # 최근 5개 파일만
+
+# 출력 설정
+output_dir: "./checkpoints_test"
