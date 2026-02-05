@@ -15,19 +15,20 @@ model:
   hidden_dropout_prob: 0.1
   attention_probs_dropout_prob: 0.1
 
-# 학습 설정 (GPU 서버 최적화)
+# 학습 설정
 training:
-  batch_size: 64             # GPU 메모리에 따라 조정 (32-128)
-  learning_rate: 0.00002     # 2e-5
+  batch_size: 128             # GPU 메모리에 따라 조정 (32-128)
+  learning_rate: 0.0001
   weight_decay: 0.01
   num_epochs: 3              # 전체 학습
-  total_steps: 100000
+  total_steps: 750000
   min_lr: 0.000001
   max_grad_norm: 1.0
   mask_prob: 0.15
   log_interval: 100          # 로그 주기
   save_interval: 5000        # 체크포인트 저장 주기
   num_workers: 8             # GPU 서버 CPU 코어 수에 따라 조정
+  use_amp: true
 
 # 데이터 설정
 data:

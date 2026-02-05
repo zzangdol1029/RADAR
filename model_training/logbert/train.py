@@ -22,7 +22,7 @@ except ImportError:
 
 # 로컬 모듈 import
 from model import create_logbert_model
-from dataset import LogBERTDataset, create_dataloader
+from dataset import LogBERTDataset, create_dataloader, collate_fn
 
 logger = logging.getLogger(__name__)
 
@@ -103,10 +103,18 @@ class LogBERTTrainer:
         self.model = create_logbert_model(config['model'])
         self.model.to(self.device)
         
-        # Multi-GPU 지원 (CUDA만)
+        # Multi-GPU 지원
+        self.use_multi_gpu = False
         if self.device_type == 'cuda' and torch.cuda.device_count() > 1:
             logger.info(f"🔧 Multi-GPU 사용: {torch.cuda.device_count()}개 GPU")
             self.model = torch.nn.DataParallel(self.model)
+            self.use_multi_gpu = True
+
+        # Mixed Precision (AMP) 설정
+        self.use_amp = config['training'].get('use_amp', True) and self.device_type == 'cuda'
+        if self.use_amp:
+            self.scaler = torch.cuda.amp.GradScaler()
+            logger.info("✅ Mixed Precision (AMP) 활성화")    
         
         # 옵티마이저
         learning_rate = float(config['training']['learning_rate'])
@@ -153,6 +161,8 @@ class LogBERTTrainer:
         total_loss = 0.0
         num_batches = 0
         
+        logger.info(f"🔄 [Epoch {epoch}] train_epoch 함수 진입 성공")
+        
         from tqdm import tqdm
         progress_bar = tqdm(
             dataloader,
@@ -163,56 +173,80 @@ class LogBERTTrainer:
             ncols=100
         )
         
-        for batch in progress_bar:
+        logger.info(f"⏳ [Epoch {epoch}] 첫 번째 배치를 로드하는 중...")
+        
+        for i, batch in enumerate(progress_bar):
+            if i == 0:
+                logger.info(f"✅ [Epoch {epoch}] 첫 번째 배치 로드 완료! GPU 연산 시작")
+        
             # 배치를 디바이스로 이동
             input_ids = batch['input_ids'].to(self.device)
             attention_mask = batch['attention_mask'].to(self.device)
             labels = batch['labels'].to(self.device)
-            
-            # Forward pass
-            outputs = self.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels,
-            )
-            
-            loss = outputs['loss']
-            
-            # Backward pass
+
+            # 옵티마이저 초기화
             self.optimizer.zero_grad()
-            loss.backward()
             
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(),
-                self.config['training'].get('max_grad_norm', 1.0)
-            )
+            # Mixed Precision (AMP) 적용 Forward pass
+            if self.use_amp:
+                with torch.cuda.amp.autocast():
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        labels=labels,
+                    )
+                    loss = outputs['loss']
+                    
+                    # Multi-GPU 사용 시 벡터로 반환된 Loss를 스칼라로 평균화
+                    if self.use_multi_gpu:
+                        loss = loss.mean()
+                
+                # 가중치 업데이트 (GradScaler 활용)
+                self.scaler.scale(loss).backward()
+                self.scaler.unscale_(self.optimizer) # Clipping 전 unscale 필수
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config['training'].get('max_grad_norm', 1.0))
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
             
-            self.optimizer.step()
+            else:
+                # 일반 정밀도 학습 (CPU/XPU/기본 CUDA 환경)
+                outputs = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels,
+                )
+                loss = outputs['loss']
+
+                if self.use_multi_gpu:
+                    loss = loss.mean()
+
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config['training'].get('max_grad_norm', 1.0))
+                self.optimizer.step()
+            
+            # 스케줄러 업데이트 및 통계 기록
             self.scheduler.step()
-            
-            # 통계
             total_loss += loss.item()
             num_batches += 1
             self.global_step += 1
             
-            # 진행 상황 업데이트
-            current_lr = self.scheduler.get_last_lr()[0]
-            progress_bar.set_postfix({
-                'loss': f'{loss.item():.4f}',
-                'avg': f'{total_loss / num_batches:.4f}',
-                'lr': f'{current_lr:.2e}',
-            })
-            
-            # 로깅
+            # 진행 상황 업데이트 및 로깅
             if self.global_step % self.config['training'].get('log_interval', 100) == 0:
+                current_lr = self.scheduler.get_last_lr()[0]
+                avg_loss_val = total_loss / num_batches
+
+                # 화면에 보이는 tqdm 업데이트
+                progress_bar.set_postfix({
+                    'loss': f'{loss.item():.4f}',
+                    'avg': f'{avg_loss_val:.4f}',
+                    'lr': f'{current_lr:.2e}',
+                })
+
+                # 파일에 기록되는 로거 업데이트 (나중에 분석용)
                 logger.info(
-                    f"[Step {self.global_step}] "
-                    f"Loss={loss.item():.4f}, "
-                    f"Avg={total_loss/num_batches:.4f}, "
-                    f"LR={current_lr:.2e}"
+                    f"[Step {self.global_step}] Loss={loss.item():.4f}, Avg={avg_loss_val:.4f}, LR={current_lr:.2e}"
                 )
-            
+
             # 체크포인트 저장
             if self.global_step % self.config['training'].get('save_interval', 5000) == 0:
                 self.save_checkpoint(f'checkpoint_step_{self.global_step}')
@@ -427,9 +461,12 @@ def main():
     dataloader = create_dataloader(
         dataset,
         batch_size=config['training']['batch_size'],
-        shuffle=True,
+        shuffle=False,
         num_workers=num_workers,
         pin_memory=pin_memory,
+        persistent_workers=True,     # 일꾼 유지
+        prefetch_factor=4,           # 데이터 미리 가져오기
+        collate_fn=collate_fn
     )
     
     logger.info(f"✅ DataLoader 생성 완료 (배치 수: {len(dataloader):,})")
