@@ -577,12 +577,26 @@ def main():
         'optimal_threshold': float(best_threshold),
         'metrics': {
             'accuracy': float(best_metrics['accuracy']),
+            'precision': float(best_metrics['precision']),
+            'recall': float(best_metrics['recall']),
             'f1_score': float(best_metrics['f1_score']),
             'roc_auc': float(best_metrics['roc_auc']),
         },
+        'confusion_matrix': {
+            'true_negative': int(best_metrics['true_negative']),
+            'false_positive': int(best_metrics['false_positive']),
+            'false_negative': int(best_metrics['false_negative']),
+            'true_positive': int(best_metrics['true_positive']),
+        },
         'statistics': {
             'normal_mean': float(np.mean(normal_scores)),
+            'normal_std': float(np.std(normal_scores)),
+            'normal_min': float(np.min(normal_scores)),
+            'normal_max': float(np.max(normal_scores)),
             'anomaly_mean': float(np.mean(anomaly_scores)),
+            'anomaly_std': float(np.std(anomaly_scores)),
+            'anomaly_min': float(np.min(anomaly_scores)),
+            'anomaly_max': float(np.max(anomaly_scores)),
         }
     }
     
