@@ -18,6 +18,7 @@ import yaml
 import torch
 import logging
 import numpy as np
+from tqdm import tqdm
 from pathlib import Path
 from typing import Dict, Any, List, Tuple
 from datetime import datetime
@@ -27,6 +28,13 @@ from sklearn.metrics import (
 )
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+import platform
+
+# 한글 폰트 설정 (Windows 기준)
+if platform.system() == 'Windows':
+    plt.rcParams['font.family'] = 'Malgun Gothic'
+plt.rcParams['axes.unicode_minus'] = False # 마이너스 기호 깨짐 방지
 
 # 로컬 모듈 import
 from model import create_logbert_model
@@ -98,14 +106,14 @@ def load_model(checkpoint_path: str, config: Dict[str, Any], device: torch.devic
     # 체크포인트 로드
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
-    # state_dict 로드
+    # state_dict 로드 (strict=False로 설정하여 position_ids 등 불일치 허용)
     if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         logger.info(f"체크포인트 정보:")
         logger.info(f"  Global Step: {checkpoint.get('global_step', 'N/A')}")
         logger.info(f"  Best Loss: {checkpoint.get('best_loss', 'N/A'):.4f}")
     else:
-        model.load_state_dict(checkpoint)
+        model.load_state_dict(checkpoint, strict=False)
     
     model.to(device)
     model.eval()
@@ -119,77 +127,103 @@ def calculate_anomaly_scores(
     sessions: List[Dict],
     device: torch.device,
     max_seq_length: int,
-    vocab_size: int
+    vocab_size: int,
+    batch_size: int = 32
 ) -> List[float]:
-    """세션들의 이상 점수 계산"""
+    model.eval()
     anomaly_scores = []
     
-    with torch.no_grad():
-        for session in sessions:
-            # 토큰 시퀀스 준비 (token_ids 필드 사용)
-            tokens = session.get('token_ids', session.get('tokens', []))
-            if len(tokens) == 0:
-                continue
+    # 개별 토큰별 손실을 구하기 위한 함수 (평균내지 않음)
+    # 0번(PAD)은 계산에서 제외(ignore_index=0)
+    criterion = torch.nn.CrossEntropyLoss(reduction='none', ignore_index=0)
+
+    for i in tqdm(range(0, len(sessions), batch_size), desc="점수 계산 중"):
+        batch_sessions = sessions[i : i + batch_size]
+        
+        batch_input_ids = []
+        for s in batch_sessions:
+            tokens = s.get('token_ids', [])[:max_seq_length]
+            tokens += [0] * (max_seq_length - len(tokens)) 
+            batch_input_ids.append(tokens)
             
-            # 패딩/자르기
-            if len(tokens) > max_seq_length:
-                tokens = tokens[:max_seq_length]
+        input_ids = torch.tensor(batch_input_ids, dtype=torch.long).to(device)
+        attention_mask = (input_ids != 0).long().to(device)
+        labels = input_ids.clone()
+
+        with torch.no_grad():
+            # 모델로부터 로짓(Logits)을 직접 가져옴
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = outputs['logits'] # [Batch, Seq, Vocab]
+
+            # CrossEntropy 계산을 위해 차원 변경
+            # logits: [Batch * Seq, Vocab], labels: [Batch * Seq]
+            flat_logits = logits.view(-1, vocab_size)
+            flat_labels = labels.view(-1)
             
-            # 텐서 변환
-            input_ids = torch.tensor([tokens], dtype=torch.long).to(device)
-            attention_mask = torch.ones_like(input_ids)
-            labels = input_ids.clone()
+            # 1. 모든 토큰의 개별 Loss 계산
+            token_losses = criterion(flat_logits, flat_labels) 
+            token_losses = token_losses.view(input_ids.size(0), -1) # [Batch, Seq]
             
-            # Loss 계산 (이상 점수)
-            try:
-                outputs = model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    labels=labels
-                )
-                loss = outputs['loss'].item()
-                anomaly_scores.append(loss)
-            except Exception as e:
-                logger.warning(f"세션 처리 중 오류: {e}")
-                continue
-    
+            # 2. 세션별 평균 Loss 계산 (패딩 제외)
+            # 실제 토큰 개수로 나누어 정확한 세션별 점수 산출
+            actual_counts = attention_mask.sum(dim=1)
+            session_losses = token_losses.sum(dim=1) / actual_counts
+            
+            anomaly_scores.extend(session_losses.cpu().numpy().tolist())
+                
     return anomaly_scores
 
-
-def load_validation_data(data_file: str, normal_ratio: float = 0.8, max_samples: int = None) -> Tuple[List[Dict], List[Dict]]:
-    """검증 데이터 로드 및 정상/이상 분리
+def load_validation_data(data_path: str, normal_ratio: float = 0.8, max_samples: int = None) -> Tuple[List[Dict], List[Dict]]:
+    data_path = Path(data_path)
+    sessions = []
     
-    Args:
-        data_file: 전처리된 JSON 파일
-        normal_ratio: 정상 데이터 비율 (0.8 = 앞 80%를 정상으로 간주)
-        max_samples: 최대 샘플 수 (None이면 전체 사용, 빠른 평가를 위해 제한 가능)
-    
-    Returns:
-        (normal_sessions, anomaly_sessions)
-    """
-    logger.info(f"검증 데이터 로드 중: {data_file}")
-    
-    with open(data_file, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    
-    # 데이터가 리스트 형식인 경우
-    if isinstance(data, list):
-        sessions = data
+    if data_path.is_dir():
+        logger.info(f"📁 검증 데이터 디렉토리 로드 중: {data_path}")
+        files = sorted(data_path.glob("preprocessed_logs_*.json"))
+        if not files:
+            logger.warning(f"❌ 해당 디렉토리에 JSON 파일이 없습니다: {data_path}")
+            return [], []
+            
+        logger.info(f"   발견된 파일 수: {len(files)}개")
+        
+        for file_path in files:
+            # 목표 샘플 수를 이미 다 채웠다면 더 이상 파일을 열지 않음
+            if max_samples is not None and len(sessions) >= max_samples:
+                break
+                
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    new_sessions = data if isinstance(data, list) else data.get('sessions', [])
+                    sessions.extend(new_sessions)
+                    # 파일 하나 읽을 때마다 현재 수집 현황 로그 출력
+                    logger.info(f"   로드 중... 현재 {len(sessions):,}개 수집됨 ({file_path.name})")
+            except Exception as e:
+                logger.error(f"❌ 파일 로드 실패 ({file_path.name}): {e}")
+                
+    elif data_path.is_file():
+        # (파일 하나일 때는 기존과 동일)
+        logger.info(f"📄 검증 데이터 파일 로드 중: {data_path}")
+        with open(data_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            sessions = data if isinstance(data, list) else data.get('sessions', [])
+            
     else:
-        sessions = data.get('sessions', [])
-    
-    total_sessions = len(sessions)
-    
-    # 샘플링 (지정된 경우)
-    if max_samples is not None and max_samples < total_sessions:
+        logger.error(f"❌ 경로를 찾을 수 없습니다: {data_path}")
+        return [], []
+
+    # 수집된 데이터가 너무 많으면 max_samples에 맞춰 자르기
+    if max_samples is not None and len(sessions) > max_samples:
         import random
-        random.seed(42)  # 재현성을 위한 시드
+        random.seed(42)
         sessions = random.sample(sessions, max_samples)
-        logger.info(f"⚡ 샘플링: {total_sessions}개 → {max_samples}개 (빠른 평가)")
-    
+        logger.info(f"⚡ 샘플링 완료: {max_samples}개 선택됨")
+
     total_sessions = len(sessions)
-    
-    # 정상/이상 분리 (앞부분을 정상, 뒷부분을 이상으로 간주)
+    if total_sessions == 0:
+        return [], []
+
+    # 정상/이상 분리
     split_idx = int(total_sessions * normal_ratio)
     normal_sessions = sessions[:split_idx]
     anomaly_sessions = sessions[split_idx:]
@@ -199,6 +233,45 @@ def load_validation_data(data_file: str, normal_ratio: float = 0.8, max_samples:
     logger.info(f"이상 세션: {len(anomaly_sessions)} ({len(anomaly_sessions)/total_sessions*100:.1f}%)")
     
     return normal_sessions, anomaly_sessions
+
+
+def generate_pseudo_anomalies(
+    sessions: List[Dict],
+    vocab_size: int,
+    max_seq_len: int,
+    ratio: float = 0.1,  # 10% 토큰 변조
+    num_anomalies: int = None
+) -> List[Dict]:
+    """정상 세션을 변조하여 가짜 이상 데이터 생성"""
+    import random
+    import copy
+    
+    if num_anomalies is None:
+        num_anomalies = len(sessions)
+    
+    # 원본 데이터에서 샘플링 (복원 추출 허용)
+    sampled_sessions = random.choices(sessions, k=num_anomalies)
+    anomaly_sessions = copy.deepcopy(sampled_sessions)
+    
+    for session in anomaly_sessions:
+        tokens = session.get('token_ids', session.get('tokens', []))
+        if not tokens:
+            continue
+            
+        # 변조할 토큰 개수
+        num_mod = max(1, int(len(tokens) * ratio))
+        
+        # 랜덤하게 인덱스 선택
+        indices = random.sample(range(len(tokens)), min(num_mod, len(tokens)))
+        
+        for idx in indices:
+            # 랜덤 토큰으로 교체 (단, [PAD], [CLS], [SEP], [MASK] 등은 피하는 것이 좋지만 간단히 구현)
+            # 여기서는 5번부터 vocab_size-1 사이의 랜덤 정수로 교체 (0~4는 특수 토큰 가정)
+            tokens[idx] = random.randint(5, vocab_size - 1)
+            
+        session['label'] = 1  # 이상 레이블
+    
+    return anomaly_sessions
 
 
 def calculate_metrics(
@@ -293,7 +366,7 @@ def plot_score_distribution(
     plt.grid(True, alpha=0.3)
     
     plt.subplot(1, 2, 2)
-    plt.boxplot([normal_scores, anomaly_scores], labels=['정상', '이상'])
+    plt.boxplot([normal_scores, anomaly_scores], tick_labels=['정상', '이상'])
     plt.axhline(threshold, color='green', linestyle='--', linewidth=2, label=f'임계값: {threshold:.4f}')
     plt.ylabel('이상 점수 (Loss)')
     plt.title('정상 vs 이상 점수 박스플롯')
@@ -304,7 +377,6 @@ def plot_score_distribution(
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     logger.info(f"📊 점수 분포 그래프 저장: {output_path}")
     plt.close()
-
 
 def plot_confusion_matrix(cm: np.ndarray, output_path: Path):
     """혼동 행렬 시각화"""
@@ -353,55 +425,88 @@ def main():
     
     parser = argparse.ArgumentParser(description='LogBERT 모델 성능 평가')
     parser.add_argument('--checkpoint', type=str, required=True,
-                       help='모델 체크포인트 경로')
+                        help='모델 체크포인트 경로')
     parser.add_argument('--config', type=str, required=True,
-                       help='설정 파일 경로')
+                        help='설정 파일 경로')
     parser.add_argument('--validation-data', type=str, required=True,
-                       help='검증 데이터 파일 경로')
+                        help='검증 데이터 파일 경로 또는 디렉토리 경로')
     parser.add_argument('--normal-ratio', type=float, default=0.8,
-                       help='정상 데이터 비율 (기본값: 0.8)')
+                        help='정상 데이터 비율 (기본값: 0.8)')
     parser.add_argument('--max-samples', type=int, default=None,
-                       help='최대 샘플 수 (빠른 평가용, 예: 1000)')
+                        help='최대 샘플 수 (빠른 평가용, 예: 1000)')
     parser.add_argument('--output-dir', type=str, default='evaluation_results',
-                       help='결과 저장 디렉토리')
+                        help='결과 저장 디렉토리')
     parser.add_argument('--log-file', type=str, default=None,
-                       help='로그 파일 경로')
+                        help='로그 파일 경로')
+    parser.add_argument('--generate-fake-anomaly', action='store_true',
+                        help='가짜 이상 데이터 생성하여 평가 (이상 데이터가 없을 때 유용)')
+    parser.add_argument('--anomaly-ratio', type=float, default=0.1,
+                        help='가짜 이상 데이터 생성 시 토큰 변조 비율 (기본값: 0.1)')
+    parser.add_argument('--batch-size', type=int, default=32,
+                        help='평가 시 배치 크기 (기본값: 32)')
     
     args = parser.parse_args()
     
-    # 로그 파일 설정
+    # 1. 체크포인트 이름 추출 및 출력 경로 설정 (ratio 포함)
+    checkpoint_path = Path(args.checkpoint)
+    checkpoint_name = checkpoint_path.stem 
+    output_dir = Path(args.output_dir) / f"{checkpoint_name}_ratio_{args.anomaly_ratio}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 2. 로그 파일 설정
     if args.log_file:
         log_file = Path(args.log_file)
     else:
-        script_dir = Path(__file__).parent
-        logs_dir = script_dir / 'logs'
+        logs_dir = Path(__file__).parent / 'logs'
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        log_file = logs_dir / f'evaluation_{timestamp}.log'
+        log_file = logs_dir / f'evaluation_{checkpoint_name}_{timestamp}.log'
     
     setup_logging(log_file)
     
     logger.info("=" * 80)
-    logger.info("LogBERT 모델 성능 평가")
+    logger.info(f"LogBERT 모델 성능 평가: {checkpoint_name}")
+    logger.info(f"변조 비율: {args.anomaly_ratio}")
+    logger.info(f"결과 저장 위치: {output_dir}")
     logger.info("=" * 80)
     
     # 디바이스 설정
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     logger.info(f"디바이스: {device}")
     
-    # 설정 로드
+    # 설정 및 모델 로드
     config = load_config(args.config)
-    
-    # 모델 로드
     model = load_model(args.checkpoint, config, device)
     
-    # 검증 데이터 로드 (샘플링 옵션 포함)
+    # 검증 데이터 로드
     normal_sessions, anomaly_sessions = load_validation_data(
         args.validation_data,
         args.normal_ratio,
-        args.max_samples  # 추가
+        args.max_samples
     )
+
+    if not normal_sessions and not anomaly_sessions:
+        logger.error("❌ 검증용 세션을 찾지 못했습니다. 경로를 확인해주세요.")
+        return
     
-    # 이상 점수 계산
+    # 3. 가짜 이상 데이터 생성 (옵션)
+    if args.generate_fake_anomaly:
+        logger.info("\n" + "=" * 80)
+        logger.info("⚠️  가짜 이상 데이터(Pseudo-Anomaly) 생성 모드")
+        logger.info("=" * 80)
+        
+        all_normal = normal_sessions + anomaly_sessions
+        normal_sessions = all_normal # 변조되지 않은 원본을 모두 정상군으로 설정
+        
+        # 사용자가 입력한 anomaly-ratio를 사용하여 이상 데이터 생성
+        anomaly_sessions = generate_pseudo_anomalies(
+            all_normal,
+            vocab_size=config['model']['vocab_size'],
+            max_seq_len=config['data']['max_seq_length'],
+            ratio=args.anomaly_ratio
+        )
+        logger.info(f"✅ 데이터 재구성 완료: {len(normal_sessions)}개 정상 / {len(anomaly_sessions)}개 이상")
+
+    # 4. 이상 점수 계산
     logger.info("\n" + "=" * 80)
     logger.info("이상 점수 계산 중...")
     logger.info("=" * 80)
@@ -411,12 +516,12 @@ def main():
     
     logger.info("정상 세션 평가 중...")
     normal_scores = calculate_anomaly_scores(
-        model, normal_sessions, device, max_seq_length, vocab_size
+        model, normal_sessions, device, max_seq_length, vocab_size, batch_size=args.batch_size
     )
     
     logger.info("이상 세션 평가 중...")
     anomaly_scores = calculate_anomaly_scores(
-        model, anomaly_sessions, device, max_seq_length, vocab_size
+        model, anomaly_sessions, device, max_seq_length, vocab_size, batch_size=args.batch_size
     )
     
     logger.info(f"✅ 정상 세션 점수 계산 완료: {len(normal_scores)}개")
@@ -427,18 +532,14 @@ def main():
     logger.info("점수 통계")
     logger.info("=" * 80)
     logger.info(f"정상 세션 - 평균: {np.mean(normal_scores):.4f}, 표준편차: {np.std(normal_scores):.4f}")
-    logger.info(f"정상 세션 - 최소: {np.min(normal_scores):.4f}, 최대: {np.max(normal_scores):.4f}")
     logger.info(f"이상 세션 - 평균: {np.mean(anomaly_scores):.4f}, 표준편차: {np.std(anomaly_scores):.4f}")
-    logger.info(f"이상 세션 - 최소: {np.min(anomaly_scores):.4f}, 최대: {np.max(anomaly_scores):.4f}")
     
-    # 최적 임계값 찾기
+    # 최적 임계값 찾기 및 메트릭 계산
     logger.info("\n" + "=" * 80)
-    logger.info("최적 임계값 탐색 중...")
+    logger.info("최적 임계값 탐색 및 결과 산출")
     logger.info("=" * 80)
     
-    best_threshold, best_metrics = find_optimal_threshold(
-        normal_scores, anomaly_scores
-    )
+    best_threshold, best_metrics = find_optimal_threshold(normal_scores, anomaly_scores)
     
     logger.info(f"✅ 최적 임계값: {best_threshold:.4f}")
     
@@ -458,61 +559,38 @@ def main():
     logger.info(f"  False Negative (FN): {best_metrics['false_negative']:4d} (이상을 정상으로 예측)")
     logger.info(f"  True Positive (TP):  {best_metrics['true_positive']:4d} (이상을 이상으로 예측)")
     
-    # 출력 디렉토리 생성
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 시각화
-    logger.info("\n" + "=" * 80)
-    logger.info("시각화 생성 중...")
-    logger.info("=" * 80)
-    
+    # 5. 시각화 및 결과 저장
     plot_score_distribution(
         normal_scores, anomaly_scores, best_threshold,
-        output_dir / 'score_distribution.png'
+        output_dir / f'score_dist_{checkpoint_name}.png'
     )
     
     plot_confusion_matrix(
         best_metrics['confusion_matrix'],
-        output_dir / 'confusion_matrix.png'
+        output_dir / f'confusion_matrix_{checkpoint_name}.png'
     )
     
-    # 결과 저장
+    # 결과 JSON 저장용 데이터 구성
     results = {
         'checkpoint': args.checkpoint,
-        'validation_data': args.validation_data,
+        'anomaly_ratio': args.anomaly_ratio,
         'optimal_threshold': float(best_threshold),
         'metrics': {
             'accuracy': float(best_metrics['accuracy']),
-            'precision': float(best_metrics['precision']),
-            'recall': float(best_metrics['recall']),
             'f1_score': float(best_metrics['f1_score']),
             'roc_auc': float(best_metrics['roc_auc']),
         },
-        'confusion_matrix': {
-            'true_negative': best_metrics['true_negative'],
-            'false_positive': best_metrics['false_positive'],
-            'false_negative': best_metrics['false_negative'],
-            'true_positive': best_metrics['true_positive'],
-        },
         'statistics': {
             'normal_mean': float(np.mean(normal_scores)),
-            'normal_std': float(np.std(normal_scores)),
-            'normal_min': float(np.min(normal_scores)),
-            'normal_max': float(np.max(normal_scores)),
             'anomaly_mean': float(np.mean(anomaly_scores)),
-            'anomaly_std': float(np.std(anomaly_scores)),
-            'anomaly_min': float(np.min(anomaly_scores)),
-            'anomaly_max': float(np.max(anomaly_scores)),
         }
     }
     
-    save_evaluation_results(results, output_dir / 'evaluation_results.json')
+    save_evaluation_results(results, output_dir / f'evaluation_results_{checkpoint_name}.json')
     
     logger.info("\n" + "=" * 80)
-    logger.info("✅ 평가 완료!")
+    logger.info(f"✅ 평가 완료! 결과 저장: {output_dir}")
     logger.info("=" * 80)
-    logger.info(f"결과 저장 위치: {output_dir}")
 
 
 if __name__ == '__main__':
