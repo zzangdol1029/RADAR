@@ -1,0 +1,22 @@
+# DeepLog 학습 의존성
+# Tesla V100-DGXS-32GB x 4 환경
+
+# 핵심 라이브러리
+torch>=2.0.0
+numpy>=1.21.0
+pyyaml>=6.0
+
+# 스트리밍 JSON 파싱 (Lazy Loading 필수)
+ijson>=3.2.0
+
+# 학습 유틸리티
+tqdm>=4.65.0
+
+# 시각화 (옵션)
+matplotlib>=3.7.0
+
+# GPU 모니터링 (옵션, nvidia-smi 사용)
+pynvml>=11.5.0
+
+# TensorBoard (옵션)
+tensorboard>=2.12.0

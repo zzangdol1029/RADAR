@@ -1,0 +1,66 @@
+# DeepLog 학습 설정 파일
+# Tesla V100-DGXS-32GB x 4 환경에 최적화
+
+# 모델 설정
+model:
+  vocab_size: 10000          # 어휘 크기 (Event ID + Special Tokens)
+  embedding_dim: 128         # 임베딩 차원
+  hidden_size: 256           # LSTM 은닉층 크기
+  num_layers: 2              # LSTM 레이어 수
+  dropout: 0.2               # 드롭아웃 확률
+
+# 학습 설정
+training:
+  batch_size: 256            # 배치 크기 (4 GPU 기준, GPU당 64)
+  learning_rate: 0.001       # 초기 학습률
+  weight_decay: 0.0001       # 가중치 감쇠 (L2 정규화)
+  num_epochs: 50             # 총 에폭 수
+  max_grad_norm: 1.0         # Gradient Clipping 최대값
+  
+  # 스케줄러 설정
+  scheduler_type: "cosine"   # 스케줄러 타입: cosine, step, reduce_on_plateau
+  min_lr: 0.000001           # 최소 학습률
+  warmup_steps: 1000         # 워밍업 스텝 수
+  
+  # 로깅 설정
+  log_interval: 100          # 배치별 로그 출력 간격
+  save_interval: 5000        # 체크포인트 저장 간격 (스텝)
+  
+  # Early Stopping 설정
+  early_stopping:
+    enabled: true
+    patience: 5              # 개선 없이 지속될 수 있는 에폭 수
+    min_delta: 0.0001        # 개선으로 간주되는 최소 변화량
+
+  # GPU 설정
+  use_multi_gpu: true        # 멀티 GPU 사용 여부
+  mixed_precision: true      # Mixed Precision Training (FP16)
+  
+  # 데이터 로더 설정
+  num_workers: 4             # 데이터 로딩 워커 수
+  prefetch_factor: 2         # 프리페치 팩터
+
+# 데이터 설정
+data:
+  preprocessed_dir: "/home/zzangdol/RADAR/preprocessing/output"  # 전처리된 데이터 디렉토리
+  max_seq_length: 512        # 최대 시퀀스 길이
+  validation_split: 0.1      # 검증 데이터 비율
+  file_pattern: "preprocessed_logs_*.json"  # 데이터 파일 패턴
+  
+  # Lazy Loading 설정
+  lazy_loading:
+    enabled: true
+    buffer_size: 10000       # 메모리에 유지할 샘플 수
+    shuffle_buffer: true     # 버퍼 내 셔플 여부
+
+# 출력 설정
+output:
+  dir: "outputs"             # 출력 디렉토리
+  checkpoint_dir: "checkpoints"  # 체크포인트 저장 디렉토리
+  log_file: "training.log"   # 학습 로그 파일
+
+# 모니터링 설정
+monitoring:
+  gpu_log_interval: 50       # GPU 상태 로깅 간격 (배치)
+  use_tensorboard: false     # TensorBoard 사용 여부
+  tensorboard_dir: "runs"    # TensorBoard 로그 디렉토리
