@@ -35,6 +35,7 @@ deeplog_training/
 ├── model.py             # DeepLog 모델 정의
 ├── dataset.py           # Lazy Loading Dataset
 ├── train.py             # 메인 학습 스크립트
+├── evaluate.py          # 모델 성능 평가 스크립트
 ├── utils.py             # GPU 모니터링, Early Stopping 등
 ├── requirements.txt     # 의존성 목록
 └── README.md            # 사용 가이드
@@ -160,15 +161,20 @@ GPU 상태 (Step 1000):
 
 ### 출력 파일
 
+학습 완료 후 다음 위치에 파일이 저장됩니다:
+
 ```
-outputs/
-├── checkpoints/
-│   ├── best_model.pt        # 최고 성능 모델
-│   ├── epoch_1.pt           # 에폭별 체크포인트
-│   ├── epoch_2.pt
-│   └── step_5000.pt         # 스텝별 체크포인트
-├── training.log             # 전체 학습 로그
-└── training_history.json    # 학습 이력 (loss, lr 등)
+/home/zzangdol/silverw/deeplog/
+├── training.log                     # 전체 학습 로그
+├── training_history.json            # 학습 이력 (loss, lr 등)
+├── evaluation_results_YYYYMMDD.json # 성능 평가 결과 (JSON)
+├── evaluation_report_YYYYMMDD.txt   # 성능 평가 리포트 (텍스트)
+└── output/
+    └── checkpoints/
+        ├── best_model.pt            # 최고 성능 모델
+        ├── epoch_1.pt               # 에폭별 체크포인트
+        ├── epoch_2.pt
+        └── step_5000.pt             # 스텝별 체크포인트
 ```
 
 ---
@@ -234,6 +240,58 @@ plt.title('Learning Rate Schedule')
 plt.tight_layout()
 plt.savefig('training_curve.png')
 plt.show()
+```
+
+---
+
+## 📊 모델 성능 평가
+
+학습 완료 후 자동으로 성능 평가가 실행됩니다. 수동으로 실행하려면:
+
+```bash
+# 최고 모델 평가
+python evaluate.py --checkpoint /home/zzangdol/silverw/deeplog/output/checkpoints/best_model.pt
+
+# 특정 체크포인트 평가
+python evaluate.py --checkpoint /path/to/checkpoint.pt --output-dir /home/zzangdol/silverw/deeplog
+```
+
+### 평가 지표
+
+1. **Top-k Accuracy**: 다음 로그 예측이 top-k 안에 있는 비율
+   - Top-1, Top-5, Top-10, Top-20 정확도 측정
+
+2. **이상 탐지 성능** (이상 데이터가 있는 경우):
+   - Precision, Recall, F1 Score
+   - False Positive Rate
+   - 다양한 임계값(P90, P95, P99)에서의 성능
+
+### 평가 결과 예시
+
+```
+================================================================================
+DeepLog 모델 성능 평가 리포트
+================================================================================
+평가 시간: 2026-02-08 22:30:00
+
+[ 다음 로그 예측 정확도 ]
+  - Evaluation Loss: 1.2345
+  - Total Predictions: 1,000,000
+  - Top-1 Accuracy: 0.6523 (65.23%)
+  - Top-5 Accuracy: 0.8234 (82.34%)
+  - Top-10 Accuracy: 0.8912 (89.12%)
+  - Top-20 Accuracy: 0.9234 (92.34%)
+
+[ 이상 점수 통계 (정상 데이터) ]
+  - 평균: 0.1234
+  - 표준편차: 0.0567
+  - 샘플 수: 50,000
+
+[ 추천 임계값 ]
+  - p90: 0.2345
+  - p95: 0.3456
+  - p99: 0.4567
+================================================================================
 ```
 
 ---

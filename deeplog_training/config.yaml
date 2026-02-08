@@ -26,11 +26,11 @@ training:
   log_interval: 100          # 배치별 로그 출력 간격
   save_interval: 5000        # 체크포인트 저장 간격 (스텝)
   
-  # Early Stopping 설정
-  early_stopping:
-    enabled: true
-    patience: 5              # 개선 없이 지속될 수 있는 에폭 수
-    min_delta: 0.0001        # 개선으로 간주되는 최소 변화량
+  # Early Stopping 설정 (비활성화됨)
+  # early_stopping:
+  #   enabled: true
+  #   patience: 5              # 개선 없이 지속될 수 있는 에폭 수
+  #   min_delta: 0.0001        # 개선으로 간주되는 최소 변화량
 
   # GPU 설정
   use_multi_gpu: true        # 멀티 GPU 사용 여부
@@ -55,9 +55,11 @@ data:
 
 # 출력 설정
 output:
-  dir: "outputs"             # 출력 디렉토리
-  checkpoint_dir: "checkpoints"  # 체크포인트 저장 디렉토리
+  base_dir: "/home/zzangdol/silverw/deeplog"  # 기본 출력 디렉토리 (로그, 이력 저장)
+  dir: "/home/zzangdol/silverw/deeplog/output"  # 모델 출력 디렉토리
+  checkpoint_dir: "checkpoints"  # 체크포인트 저장 디렉토리 (output/checkpoints)
   log_file: "training.log"   # 학습 로그 파일
+  eval_dir: "/home/zzangdol/silverw/deeplog"  # 평가 결과 저장 디렉토리
 
 # 모니터링 설정
 monitoring:
