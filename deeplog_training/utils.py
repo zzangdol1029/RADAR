@@ -395,21 +395,30 @@ def get_lr_scheduler(optimizer, config: Dict[str, Any], total_steps: int):
             gamma=0.5
         )
     elif scheduler_type == 'reduce_on_plateau':
-    from torch.optim.lr_scheduler import ReduceLROnPlateau
-    
-    # config에서 세부 파라미터 가져오기
-    lr_config = config.get('lr_scheduler', {})
-    
-    scheduler = ReduceLROnPlateau(
-        optimizer,
-        mode='min',                                    # validation loss 최소화
-        factor=lr_config.get('factor', 0.5),           # 학습률 감소 비율
-        patience=lr_config.get('patience', 3),         # 감소 전 대기 에폭
-        min_lr=lr_config.get('min_lr', 1e-5),          # 최소 학습률
-        verbose=True,                                  # 학습률 변경 시 로그 출력
-        threshold=lr_config.get('threshold', 0.0001),  # 개선 판단 임계값
-    )
-
+        from torch.optim.lr_scheduler import ReduceLROnPlateau
+        
+        # config에서 세부 파라미터 가져오기
+        lr_config = config.get('lr_scheduler', {})
+        
+        scheduler = ReduceLROnPlateau(
+            optimizer,
+            mode='min',                                    # validation loss 최소화
+            factor=lr_config.get('factor', 0.5),           # 학습률 감소 비율
+            patience=lr_config.get('patience', 3),         # 감소 전 대기 에폭
+            min_lr=lr_config.get('min_lr', 1e-5),          # 최소 학습률
+            verbose=True,                                  # 학습률 변경 시 로그 출력
+            threshold=lr_config.get('threshold', 0.0001),  # 개선 판단 임계값
+        )
+        # ReduceLROnPlateau는 warmup과 함께 사용하지 않음
+        return scheduler
+    else:
+        # 기본: cosine
+        from torch.optim.lr_scheduler import CosineAnnealingLR
+        scheduler = CosineAnnealingLR(
+            optimizer,
+            T_max=total_steps,
+            eta_min=min_lr
+        )
     
     # 워밍업 스케줄러 (Linear warmup)
     if warmup_steps > 0 and scheduler is not None:

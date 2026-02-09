@@ -107,8 +107,7 @@ class DeepLogTrainer:
         self.gpu_monitor = GPUMonitor(log_interval=monitoring_config.get('gpu_log_interval', 50))
         self.timer = TrainingTimer()
         
-
-        # 변경: 활성화
+        # Early Stopping 설정
         es_config = self.training_config.get('early_stopping', {})
         if es_config.get('enabled', False):
             self.early_stopping = EarlyStopping(
@@ -127,6 +126,9 @@ class DeepLogTrainer:
             'learning_rate': [],
             'epoch_times': [],
         }
+        
+        # 스케줄러 초기화 (train에서 설정됨)
+        self.scheduler = None
     
     def train_epoch(self, train_loader, epoch: int) -> float:
         """한 에폭 학습"""
@@ -137,7 +139,6 @@ class DeepLogTrainer:
         
         self.timer.start_epoch(epoch)
         
-        # Progress bar
         pbar = tqdm(
             enumerate(train_loader),
             desc=f"Epoch {epoch}/{self.training_config.get('num_epochs', 50)}",
@@ -148,13 +149,14 @@ class DeepLogTrainer:
         
         batch_start = datetime.now()
         
+        # ReduceLROnPlateau 여부 확인
+        is_plateau_scheduler = self.training_config.get('scheduler_type') == 'reduce_on_plateau'
+        
         for batch_idx, batch in pbar:
-            # 배치를 GPU로 이동
             input_ids = batch['input_ids'].to(self.device, non_blocking=True)
             attention_mask = batch['attention_mask'].to(self.device, non_blocking=True)
             labels = batch['labels'].to(self.device, non_blocking=True)
             
-            # Forward pass (Mixed Precision)
             self.optimizer.zero_grad()
             
             if self.use_amp:
@@ -166,14 +168,10 @@ class DeepLogTrainer:
                     )
                     loss = outputs['loss']
                     
-                    # 멀티 GPU에서 loss 평균
                     if isinstance(loss, torch.Tensor) and loss.dim() > 0:
                         loss = loss.mean()
                 
-                # Backward pass with scaling
                 self.scaler.scale(loss).backward()
-                
-                # Gradient clipping
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(),
@@ -200,10 +198,9 @@ class DeepLogTrainer:
                 )
                 self.optimizer.step()
             
-            # 스케줄러 업데이트
-            if hasattr(self, 'scheduler') and self.scheduler is not None:
-                if self.training_config.get('scheduler_type') != 'reduce_on_plateau':
-                    self.scheduler.step()
+            # 스케줄러 업데이트 (ReduceLROnPlateau 제외 - 에폭 단위로만 업데이트)
+            if self.scheduler is not None and not is_plateau_scheduler:
+                self.scheduler.step()
             
             # 통계 업데이트
             batch_time = (datetime.now() - batch_start).total_seconds()
@@ -255,13 +252,27 @@ class DeepLogTrainer:
         return loss_meter.avg
     
     @torch.no_grad()
-    def validate(self, val_loader) -> float:
-        """검증"""
+    def validate(self, val_loader, calculate_topg: bool = True) -> Dict[str, float]:
+        """검증 (Loss + Top-g Accuracy)
+        
+        Args:
+            val_loader: 검증 데이터 로더
+            calculate_topg: Top-g Accuracy 계산 여부
+        
+        Returns:
+            {'val_loss': float, 'topg_accuracy': float}
+        """
         self.model.eval()
         
         loss_meter = AverageMeter('ValLoss')
         
-        pbar = tqdm(val_loader, desc="Validation", leave=False, ncols=100)
+        # Top-g Accuracy 계산용
+        eval_config = self.config.get('evaluation', {})
+        g = eval_config.get('top_g', 9)
+        topg_correct = 0
+        topg_total = 0
+        
+        pbar = tqdm(val_loader, desc="Validation", leave=False, ncols=120)
         
         for batch in pbar:
             input_ids = batch['input_ids'].to(self.device)
@@ -287,11 +298,80 @@ class DeepLogTrainer:
                 loss = loss.mean()
             
             loss_meter.update(loss.item())
-            pbar.set_postfix({'val_loss': f'{loss_meter.avg:.4f}'})
+            
+            # Top-g Accuracy 계산
+            if calculate_topg:
+                logits = outputs['logits']  # [batch, seq_len, vocab_size]
+                
+                # 각 위치에서 상위 g개 예측
+                _, top_indices = torch.topk(logits, k=g, dim=-1)  # [batch, seq_len, g]
+                
+                # 정답이 상위 g개 안에 있는지 확인
+                labels_expanded = labels.unsqueeze(-1).expand_as(top_indices)
+                matches = (top_indices == labels_expanded).any(dim=-1)  # [batch, seq_len]
+                
+                # padding 제외 (-100은 padding 토큰)
+                valid_mask = (labels != -100)
+                topg_correct += (matches & valid_mask).sum().item()
+                topg_total += valid_mask.sum().item()
+            
+            # Progress bar 업데이트
+            if calculate_topg and topg_total > 0:
+                current_acc = topg_correct / topg_total
+                pbar.set_postfix({
+                    'val_loss': f'{loss_meter.avg:.4f}',
+                    f'top{g}_acc': f'{current_acc:.4f}'
+                })
+            else:
+                pbar.set_postfix({'val_loss': f'{loss_meter.avg:.4f}'})
         
         pbar.close()
         
-        return loss_meter.avg
+        result = {'val_loss': loss_meter.avg}
+        
+        if calculate_topg and topg_total > 0:
+            topg_accuracy = topg_correct / topg_total
+            result['topg_accuracy'] = topg_accuracy
+            logger.info(f"Top-{g} Accuracy: {topg_accuracy:.4f} ({topg_correct:,}/{topg_total:,})")
+        
+        return result
+    
+    @torch.no_grad()
+    def calculate_topg_accuracy(self, val_loader, g: int = 9) -> float:
+        """DeepLog Top-g Accuracy 계산
+        
+        Args:
+            val_loader: 검증 데이터 로더
+            g: 상위 g개 예측 후보 (논문에서는 g=9)
+        
+        Returns:
+            Top-g Accuracy (0.0 ~ 1.0)
+        """
+        self.model.eval()
+        correct = 0
+        total = 0
+        
+        for batch in tqdm(val_loader, desc="Top-g Accuracy", leave=False):
+            input_ids = batch['input_ids'].to(self.device)
+            labels = batch['labels'].to(self.device)
+            
+            outputs = self.model(input_ids=input_ids)
+            logits = outputs['logits']  # [batch, seq_len, vocab_size]
+            
+            # 각 위치에서 상위 g개 예측
+            _, top_indices = torch.topk(logits, k=g, dim=-1)  # [batch, seq_len, g]
+            
+            # 정답이 상위 g개 안에 있는지 확인
+            labels_expanded = labels.unsqueeze(-1).expand_as(top_indices)
+            matches = (top_indices == labels_expanded).any(dim=-1)  # [batch, seq_len]
+            
+            # padding 제외
+            valid_mask = (labels != -100)
+            correct += (matches & valid_mask).sum().item()
+            total += valid_mask.sum().item()
+        
+        accuracy = correct / total if total > 0 else 0.0
+        return accuracy
     
     def save_checkpoint(self, name: str):
         """체크포인트 저장"""
@@ -317,7 +397,7 @@ class DeepLogTrainer:
         if self.scaler is not None:
             checkpoint['scaler_state_dict'] = self.scaler.state_dict()
         
-        if hasattr(self, 'scheduler') and self.scheduler is not None:
+        if self.scheduler is not None:
             checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
         
         torch.save(checkpoint, checkpoint_path)
@@ -355,46 +435,29 @@ class DeepLogTrainer:
             num_epochs = self.training_config.get('num_epochs', 50)
         
         # 스케줄러 설정
-        # IterableDataset은 len()을 지원하지 않으므로 추정값 사용
         try:
             total_steps = len(train_loader) * num_epochs
         except TypeError:
-            # Lazy loading dataset의 경우 빠른 추정 사용
-            # get_total_samples() 호출은 느릴 수 있으므로 고정 추정치 사용
             batch_size = self.training_config.get('batch_size', 64)
-            
-            # 데이터 파일 수와 평균 파일 크기로 추정
-            # 120GB / 100개 파일 = ~1.2GB/파일
-            # 1.2GB / 800 bytes/sample = ~1,500,000 samples/파일
             num_files = len(train_loader.dataset.data_files) if hasattr(train_loader.dataset, 'data_files') else 50
-            estimated_samples_per_file = 1500000  # 보수적 추정
+            estimated_samples_per_file = 1500000
             estimated_samples = num_files * estimated_samples_per_file
-            
             total_steps = (estimated_samples // batch_size) * num_epochs
-            
             logger.info(f"총 스텝 추정치 사용: {total_steps:,} (파일 {num_files}개 기준)")
-            logger.info(f"  → 이 값은 ETA 계산에만 사용되며 학습엔 영향 없음")
         
         self.timer.total_steps = total_steps
         self.timer.total_epochs = num_epochs
         
         self.scheduler = get_lr_scheduler(self.optimizer, self.training_config, total_steps)
-
-        # 검증 후 ReduceLROnPlateau 업데이트 추가
-        if val_loader is not None:
-            val_loss = self.validate(val_loader)
-            logger.info(f"Validation Loss: {val_loss:.4f}")
-    
-            # ReduceLROnPlateau는 validation loss로 업데이트
-            if hasattr(self, 'scheduler') and self.scheduler is not None:
-                if self.training_config.get('scheduler_type') == 'reduce_on_plateau':
-                    self.scheduler.step(val_loss)  # val_loss 전달
-
+        
+        # ReduceLROnPlateau 여부 확인
+        is_plateau_scheduler = self.training_config.get('scheduler_type') == 'reduce_on_plateau'
         
         # 학습 시작 로그
         print_training_banner(self.config)
         logger.info(f"총 에폭: {num_epochs}")
         logger.info(f"예상 총 스텝: {total_steps:,}")
+        logger.info(f"스케줄러 타입: {self.training_config.get('scheduler_type', 'cosine')}")
         
         self.timer.start()
         
@@ -411,19 +474,48 @@ class DeepLogTrainer:
             train_loss = self.train_epoch(train_loader, epoch)
             
             # 검증
+            val_result = None
             val_loss = None
+            topg_accuracy = None
+            
             if val_loader is not None:
-                val_loss = self.validate(val_loader)
+                eval_config = self.config.get('evaluation', {})
+                eval_interval = eval_config.get('eval_interval', 1)
+                
+                # Top-g Accuracy는 매 에폭마다 또는 설정된 간격마다 계산
+                calculate_topg = (epoch % eval_interval == 0)
+                
+                val_result = self.validate(val_loader, calculate_topg=calculate_topg)
+                val_loss = val_result['val_loss']
+                topg_accuracy = val_result.get('topg_accuracy', None)
+                
                 logger.info(f"Validation Loss: {val_loss:.4f}")
+                if topg_accuracy is not None:
+                    logger.info(f"Top-g Accuracy: {topg_accuracy:.4f}")
+            
+            # ReduceLROnPlateau 스케줄러 업데이트 (validation loss 기준)
+            if self.scheduler is not None and is_plateau_scheduler:
+                if val_loss is not None:
+                    old_lr = self.optimizer.param_groups[0]['lr']
+                    self.scheduler.step(val_loss)
+                    new_lr = self.optimizer.param_groups[0]['lr']
+                    
+                    if new_lr != old_lr:
+                        logger.warning(f"🔽 학습률 감소: {old_lr:.2e} → {new_lr:.2e}")
             
             # 학습 이력 저장
             self.training_history['train_loss'].append(train_loss)
             if val_loss is not None:
                 self.training_history['val_loss'].append(val_loss)
+            if topg_accuracy is not None:
+                if 'topg_accuracy' not in self.training_history:
+                    self.training_history['topg_accuracy'] = []
+                self.training_history['topg_accuracy'].append(topg_accuracy)
+            
             self.training_history['learning_rate'].append(self.optimizer.param_groups[0]['lr'])
             self.training_history['epoch_times'].append(self.timer.epoch_times[-1] if self.timer.epoch_times else 0)
             
-            # 최고 모델 저장
+            # 최고 모델 저장 (validation loss 기준)
             current_loss = val_loss if val_loss is not None else train_loss
             if current_loss < self.best_loss:
                 self.best_loss = current_loss
@@ -433,25 +525,35 @@ class DeepLogTrainer:
             # 에폭 체크포인트 저장
             self.save_checkpoint(f'epoch_{epoch}')
             
-            # Early Stopping 체크
+            # Early Stopping 체크 (validation loss 기준)
             if self.early_stopping is not None:
                 if self.early_stopping(current_loss, self.model, epoch):
-                    logger.warning("Early Stopping 발동!")
+                    logger.warning("🛑 Early Stopping 발동!")
                     break
             
             # 에폭 요약
             time_summary = self.timer.get_summary()
-            logger.info(
-                f"\nEpoch {epoch} 요약:\n"
-                f"  - Train Loss: {train_loss:.4f}\n"
-                f"  - Val Loss: {val_loss:.4f if val_loss else 'N/A'}\n"
-                f"  - Best Loss: {self.best_loss:.4f}\n"
-                f"  - 경과 시간: {time_summary['elapsed']}\n"
+            summary_lines = [
+                f"\nEpoch {epoch} 요약:",
+                f"  - Train Loss: {train_loss:.4f}",
+                f"  - Val Loss: {val_loss:.4f if val_loss else 'N/A'}",
+            ]
+            
+            if topg_accuracy is not None:
+                summary_lines.append(f"  - Top-g Accuracy: {topg_accuracy:.4f}")
+            
+            summary_lines.extend([
+                f"  - Best Loss: {self.best_loss:.4f}",
+                f"  - Learning Rate: {self.optimizer.param_groups[0]['lr']:.2e}",
+                f"  - 경과 시간: {time_summary['elapsed']}",
                 f"  - 예상 남은 시간: {time_summary['eta']}"
-            )
+            ])
+            
+            logger.info("\n".join(summary_lines))
         
         # 학습 완료
         if self.early_stopping is not None and self.early_stopping.stopped:
+            logger.info("Early Stopping으로 인한 조기 종료 - 최고 모델 가중치 복원 중...")
             self.early_stopping.restore_best_weights(self.model)
         
         total_time = self.timer.get_elapsed_time()
@@ -461,13 +563,13 @@ class DeepLogTrainer:
         logger.info(f"총 학습 시간: {self.timer.format_time(total_time)}")
         logger.info(f"{'='*80}")
         
-        # 학습 이력 저장 (base_dir에 저장)
+        # 학습 이력 저장
         history_path = self.base_dir / 'training_history.json'
         with open(history_path, 'w', encoding='utf-8') as f:
-            json.dump(self.training_history, f, indent=2)
+            json.dump(self.training_history, f, indent=2, ensure_ascii=False)
         logger.info(f"학습 이력 저장: {history_path}")
         
-        # 학습 완료 후 모델 성능 평가 자동 실행
+        # 평가 자동 실행
         self._run_evaluation()
     
     def _run_evaluation(self):
@@ -654,45 +756,6 @@ def main():
         val_loader=val_loader,
         num_epochs=args.epochs or config['training']['num_epochs'],
     )
-
-@torch.no_grad()
-def calculate_topg_accuracy(self, val_loader, g: int = 9) -> float:
-    """DeepLog Top-g Accuracy 계산
-    
-    Args:
-        val_loader: 검증 데이터 로더
-        g: 상위 g개 예측 후보 (논문에서는 g=9)
-    
-    Returns:
-        Top-g Accuracy (0.0 ~ 1.0)
-    """
-    self.model.eval()
-    correct = 0
-    total = 0
-    
-    for batch in tqdm(val_loader, desc="Top-g Accuracy", leave=False):
-        input_ids = batch['input_ids'].to(self.device)
-        labels = batch['labels'].to(self.device)
-        
-        outputs = self.model(input_ids=input_ids)
-        logits = outputs['logits']  # [batch, seq_len, vocab_size]
-        
-        # 각 위치에서 상위 g개 예측
-        _, top_indices = torch.topk(logits, k=g, dim=-1)  # [batch, seq_len, g]
-        
-        # 정답이 상위 g개 안에 있는지 확인
-        labels_expanded = labels.unsqueeze(-1).expand_as(top_indices)
-        matches = (top_indices == labels_expanded).any(dim=-1)  # [batch, seq_len]
-        
-        # padding 제외
-        valid_mask = (labels != -100)
-        correct += (matches & valid_mask).sum().item()
-        total += valid_mask.sum().item()
-    
-    accuracy = correct / total if total > 0 else 0.0
-    return accuracy
-
-
 
 
 if __name__ == '__main__':
