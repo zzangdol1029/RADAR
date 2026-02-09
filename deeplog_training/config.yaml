@@ -11,20 +11,22 @@ model:
 
 # 학습 설정
 training:
-  batch_size: 1024            # ✅ 배치 크기 변경: 512 → 1024 (4 GPU, GPU당 256)
-  learning_rate: 0.001        # 초기 학습률
-  weight_decay: 0.0001        # 가중치 감쇠 (L2 정규화)
-  num_epochs: 50              # 총 에폭 수
-  max_grad_norm: 1.0          # Gradient Clipping 최대값
-  
+  # 기본 하이퍼파라미터
+  batch_size: 512                      # GPU당 배치 크기
+  gradient_accumulation_steps: 4       # 🆕 Gradient Accumulation (512*4*4=8192 effective batch)
+  learning_rate: 0.001                 # 초기 학습률
+  weight_decay: 0.0001                 # 가중치 감쇠 (L2 정규화)
+  num_epochs: 50                       # 총 에폭 수
+  max_grad_norm: 1.0                   # Gradient Clipping 최대값
+
   # 스케줄러 설정
   scheduler_type: "reduce_on_plateau"  # ReduceLROnPlateau 사용
-  min_lr: 0.000001            # 최소 학습률
-  warmup_steps: 500           # ✅ 워밍업 스텝 감소 (batch 1024에 맞춰 조정)
-  
+  min_lr: 0.000001                     # 최소 학습률
+  warmup_steps: 1000                   # 워밍업 스텝
+
   # 로깅 설정
-  log_interval: 50            # 배치별 로그 출력 간격
-  save_interval: 1500         # 체크포인트 저장 간격 (스텝)
+  log_interval: 100                    # 배치별 로그 출력 간격
+  save_interval: 3000                  # 체크포인트 저장 간격 (스텝)
   
   # ✅ Early Stopping 설정 (활성화)
   early_stopping:
@@ -40,24 +42,40 @@ training:
     threshold: 0.0001         # 개선 판단 임계값
 
   # GPU 설정
-  use_multi_gpu: true         # 멀티 GPU 사용 여부
-  mixed_precision: true       # Mixed Precision Training (FP16)
-  
+  use_multi_gpu: true                  # 멀티 GPU 사용 여부
+  use_ddp: true                        # 🆕 DistributedDataParallel 사용 (DataParallel 대신)
+  mixed_precision: true                # Mixed Precision Training (FP16)
+
   # 데이터 로더 설정
-  num_workers: 16             # 데이터 로딩 워커 수
-  prefetch_factor: 4          # 프리페치 팩터
+  num_workers: 8                       # 🔄 데이터 로딩 워커 수 (DDP에서는 프로세스당)
+  prefetch_factor: 6                   # 🔄 프리페치 팩터 증가
+  persistent_workers: true             # 🆕 워커 재사용 (에폭 간)
+
+  # H100 최적화 (조건부 - A100/H100 환경에서만 활성화)
+  h100_optimizations:
+    enabled: false                     # H100 환경에서 true로 변경
+    compile_model: false               # torch.compile (PyTorch 2.0+)
+    use_fp8: false                     # FP8 학습 (Transformer Engine)
+    use_cuda_graphs: false             # CUDA Graphs
 
 # 데이터 설정
 data:
-  preprocessed_dir: "/home/zzangdol/RADAR/preprocessing/output"
-  max_seq_length: 512         # 최대 시퀀스 길이
-  validation_split: 0.1       # ✅ 검증 데이터 비율 (10%)
-  file_pattern: "preprocessed_logs_*.json"
-  
+  # 🔄 Parquet 사용 (10-20배 빠른 I/O) - JSON에서 변환 후 경로 업데이트
+  preprocessed_dir: "/home/zzangdol/RADAR/preprocessing/output_parquet"
+  # JSON 폴백 (하위 호환성)
+  preprocessed_dir_json: "/home/zzangdol/RADAR/preprocessing/output"
+
+  max_seq_length: 512                  # 최대 시퀀스 길이
+  validation_split: 0.1                # 검증 데이터 비율 (10%)
+
+  # 파일 패턴
+  file_pattern: "*.parquet"            # 🔄 Parquet 패턴
+  file_pattern_json: "preprocessed_logs_*.json"  # JSON 폴백
+
   # Lazy Loading 설정
   lazy_loading:
     enabled: true
-    buffer_size: 20000        # ✅ 버퍼 크기 증가 (batch 1024에 맞춰)
+    buffer_size: 20000                 # 🔄 버퍼 크기 증가 (더 나은 셔플링)
     shuffle_buffer: true
 
 # 출력 설정

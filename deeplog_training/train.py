@@ -25,6 +25,8 @@ import logging
 
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.optim import AdamW
 from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
@@ -42,47 +44,114 @@ warnings.filterwarnings('ignore', category=UserWarning, module='torch.nn.paralle
 logger = logging.getLogger(__name__)
 
 
+def setup_distributed():
+    """
+    DistributedDataParallel (DDP) 초기화
+
+    torchrun 또는 torch.distributed.launch로 실행 시 자동으로 환경 변수 설정됨
+
+    Returns:
+        (rank, world_size, local_rank) 튜플
+    """
+    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
+        # torchrun으로 실행된 경우
+        rank = int(os.environ['RANK'])
+        world_size = int(os.environ['WORLD_SIZE'])
+        local_rank = int(os.environ['LOCAL_RANK'])
+    else:
+        # 단일 프로세스 (DDP 미사용)
+        rank = 0
+        world_size = 1
+        local_rank = 0
+
+    if world_size > 1:
+        # DDP 초기화
+        dist.init_process_group(
+            backend='nccl',  # NVIDIA GPU용 백엔드
+            init_method='env://',
+        )
+        torch.cuda.set_device(local_rank)
+
+        if rank == 0:
+            logger.info(f"✅ DDP 초기화 완료: {world_size}개 프로세스 (NCCL 백엔드)")
+
+    return rank, world_size, local_rank
+
+
+def cleanup_distributed():
+    """DDP 정리"""
+    if dist.is_initialized():
+        dist.destroy_process_group()
+
+
 class DeepLogTrainer:
     """DeepLog 모델 학습 클래스"""
     
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], rank: int = 0, world_size: int = 1, local_rank: int = 0):
         """
         Args:
             config: 학습 설정 딕셔너리
+            rank: DDP rank (기본값: 0)
+            world_size: DDP world size (기본값: 1)
+            local_rank: DDP local rank (기본값: 0)
         """
         self.config = config
         self.training_config = config.get('training', {})
         self.model_config = config.get('model', {})
         self.data_config = config.get('data', {})
-        
-        # 디바이스 설정
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # DDP 설정
+        self.rank = rank
+        self.world_size = world_size
+        self.local_rank = local_rank
+        self.is_distributed = world_size > 1
+        self.use_ddp = self.training_config.get('use_ddp', True) and self.is_distributed
+
+        # 디바이스 설정 (DDP에서는 local_rank 기반)
+        if self.is_distributed:
+            self.device = torch.device(f'cuda:{local_rank}')
+        else:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
         self.num_gpus = torch.cuda.device_count()
         self.use_multi_gpu = self.training_config.get('use_multi_gpu', True) and self.num_gpus > 1
-        
-        logger.info(f"디바이스: {self.device}")
-        logger.info(f"GPU 수: {self.num_gpus}")
-        
-        # 출력 디렉토리 설정
+
+        if self.rank == 0:  # rank 0만 로깅
+            logger.info(f"디바이스: {self.device}")
+            logger.info(f"GPU 수: {self.num_gpus}")
+            if self.is_distributed:
+                logger.info(f"DDP: rank {rank}/{world_size}, local_rank {local_rank}")
+
+        # 출력 디렉토리 설정 (rank 0만)
         output_config = config.get('output', {})
         self.base_dir = Path(output_config.get('base_dir', '/home/zzangdol/silverw/deeplog'))
         self.output_dir = Path(output_config.get('dir', '/home/zzangdol/silverw/deeplog/output'))
         self.checkpoint_dir = self.output_dir / output_config.get('checkpoint_dir', 'checkpoints')
         self.eval_dir = Path(output_config.get('eval_dir', '/home/zzangdol/silverw/deeplog'))
-        
-        # 디렉토리 생성
-        self.base_dir.mkdir(parents=True, exist_ok=True)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
-        self.eval_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        # 디렉토리 생성 (rank 0만)
+        if self.rank == 0:
+            self.base_dir.mkdir(parents=True, exist_ok=True)
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            self.eval_dir.mkdir(parents=True, exist_ok=True)
+
         # 모델 생성
         self.model = create_deeplog_model(self.model_config)
         self.model.to(self.device)
-        
-        # 멀티 GPU 래핑
-        if self.use_multi_gpu:
-            logger.info(f"DataParallel로 {self.num_gpus}개 GPU에 모델 배포")
+
+        # 멀티 GPU 래핑 (DDP 우선, DataParallel 폴백)
+        if self.use_ddp:
+            self.model = DDP(
+                self.model,
+                device_ids=[local_rank],
+                output_device=local_rank,
+                find_unused_parameters=False,  # 성능 최적화
+            )
+            if self.rank == 0:
+                logger.info(f"✅ DDP로 {self.num_gpus}개 GPU에 모델 배포")
+        elif self.use_multi_gpu:
+            logger.info(f"⚠️ DataParallel로 {self.num_gpus}개 GPU에 모델 배포 (DDP 권장)")
             self.model = nn.DataParallel(self.model)
         
         # 옵티마이저
@@ -95,7 +164,8 @@ class DeepLogTrainer:
         # Mixed Precision
         self.use_amp = self.training_config.get('mixed_precision', True) and torch.cuda.is_available()
         self.scaler = GradScaler() if self.use_amp else None
-        logger.info(f"Mixed Precision (FP16): {self.use_amp}")
+        if self.rank == 0:
+            logger.info(f"Mixed Precision (FP16): {self.use_amp}")
         
         # 학습 상태
         self.global_step = 0
@@ -129,7 +199,57 @@ class DeepLogTrainer:
         
         # 스케줄러 초기화 (train에서 설정됨)
         self.scheduler = None
-    
+
+        # H100 최적화 적용 (조건부)
+        self._apply_h100_optimizations()
+
+    def _apply_h100_optimizations(self):
+        """H100/A100 특화 최적화 (조건부 활성화)"""
+        h100_config = self.training_config.get('h100_optimizations', {})
+
+        if not h100_config.get('enabled', False):
+            return
+
+        if self.rank != 0:
+            return  # rank 0만 로깅
+
+        # GPU 아키텍처 확인
+        gpu_name = torch.cuda.get_device_name(0)
+        if 'H100' not in gpu_name and 'A100' not in gpu_name:
+            logger.warning(
+                f"H100/A100 최적화가 활성화되었지만 현재 GPU는 {gpu_name}입니다. "
+                f"최적화를 건너뜁니다."
+            )
+            return
+
+        logger.info(f"🚀 {gpu_name} 최적화 적용 중...")
+
+        # torch.compile (PyTorch 2.0+)
+        if h100_config.get('compile_model', False):
+            try:
+                # DDP 모델인 경우 내부 모델을 컴파일
+                if isinstance(self.model, DDP):
+                    logger.info("⚠️ DDP 모델은 torch.compile 적용이 제한적입니다.")
+                else:
+                    self.model = torch.compile(
+                        self.model,
+                        mode='max-autotune',  # 최대 최적화
+                        fullgraph=False,      # 부분 그래프 허용
+                    )
+                    logger.info("✅ torch.compile 활성화 (워밍업 중...)")
+            except Exception as e:
+                logger.warning(f"torch.compile 실패: {e}")
+
+        # FP8 학습 (Transformer Engine) - H100만
+        if h100_config.get('use_fp8', False) and 'H100' in gpu_name:
+            try:
+                import transformer_engine.pytorch as te
+                logger.info("✅ FP8 학습 지원 확인 (Transformer Engine)")
+                # LSTM은 Transformer Engine과 호환되지 않을 수 있음
+                logger.warning("⚠️ DeepLog LSTM 모델은 FP8를 직접 지원하지 않을 수 있습니다.")
+            except ImportError:
+                logger.warning("Transformer Engine 미설치, FP8 사용 불가")
+
     def train_epoch(self, train_loader, epoch: int) -> float:
         """한 에폭 학습"""
         self.model.train()
@@ -139,26 +259,32 @@ class DeepLogTrainer:
         
         self.timer.start_epoch(epoch)
         
+        # Gradient Accumulation 설정
+        accumulation_steps = self.training_config.get('gradient_accumulation_steps', 1)
+
         pbar = tqdm(
             enumerate(train_loader),
             desc=f"Epoch {epoch}/{self.training_config.get('num_epochs', 50)}",
             unit='batch',
             leave=True,
             ncols=120,
+            disable=(self.rank != 0),  # rank 0만 progress bar 표시
         )
-        
+
         batch_start = datetime.now()
-        
+
         # ReduceLROnPlateau 여부 확인
         is_plateau_scheduler = self.training_config.get('scheduler_type') == 'reduce_on_plateau'
-        
+
         for batch_idx, batch in pbar:
             input_ids = batch['input_ids'].to(self.device, non_blocking=True)
             attention_mask = batch['attention_mask'].to(self.device, non_blocking=True)
             labels = batch['labels'].to(self.device, non_blocking=True)
-            
-            self.optimizer.zero_grad()
-            
+
+            # Gradient Accumulation: 첫 번째 배치에서만 zero_grad
+            if batch_idx % accumulation_steps == 0:
+                self.optimizer.zero_grad()
+
             if self.use_amp:
                 with autocast():
                     outputs = self.model(
@@ -167,19 +293,29 @@ class DeepLogTrainer:
                         labels=labels,
                     )
                     loss = outputs['loss']
-                    
+
                     if isinstance(loss, torch.Tensor) and loss.dim() > 0:
                         loss = loss.mean()
-                
+
+                    # Gradient Accumulation: loss 스케일링
+                    loss = loss / accumulation_steps
+
                 self.scaler.scale(loss).backward()
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.training_config.get('max_grad_norm', 1.0)
-                )
-                
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
+
+                # Gradient Accumulation: accumulation_steps마다 optimizer step
+                if (batch_idx + 1) % accumulation_steps == 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.training_config.get('max_grad_norm', 1.0)
+                    )
+
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+
+                    # 스케줄러 업데이트 (optimizer step 후)
+                    if self.scheduler is not None and not is_plateau_scheduler:
+                        self.scheduler.step()
             else:
                 outputs = self.model(
                     input_ids=input_ids,
@@ -187,68 +323,77 @@ class DeepLogTrainer:
                     labels=labels,
                 )
                 loss = outputs['loss']
-                
+
                 if isinstance(loss, torch.Tensor) and loss.dim() > 0:
                     loss = loss.mean()
-                
+
+                loss = loss / accumulation_steps
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(),
-                    self.training_config.get('max_grad_norm', 1.0)
-                )
-                self.optimizer.step()
-            
-            # 스케줄러 업데이트 (ReduceLROnPlateau 제외 - 에폭 단위로만 업데이트)
-            if self.scheduler is not None and not is_plateau_scheduler:
-                self.scheduler.step()
-            
+
+                if (batch_idx + 1) % accumulation_steps == 0:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.training_config.get('max_grad_norm', 1.0)
+                    )
+                    self.optimizer.step()
+
+                    if self.scheduler is not None and not is_plateau_scheduler:
+                        self.scheduler.step()
+
             # 통계 업데이트
             batch_time = (datetime.now() - batch_start).total_seconds()
             batch_start = datetime.now()
-            
-            loss_meter.update(loss.item())
+
+            # 실제 loss 값 (accumulation_steps 곱함)
+            actual_loss = loss.item() * accumulation_steps
+            loss_meter.update(actual_loss)
             batch_time_meter.update(batch_time)
-            
-            self.global_step += 1
-            self.timer.step()
-            
-            # Progress bar 업데이트
-            current_lr = self.optimizer.param_groups[0]['lr']
-            pbar.set_postfix({
-                'loss': f'{loss.item():.4f}',
-                'avg': f'{loss_meter.avg:.4f}',
-                'lr': f'{current_lr:.2e}',
-                'ms/batch': f'{batch_time*1000:.0f}',
-            })
-            
-            # 상세 로깅
-            log_interval = self.training_config.get('log_interval', 100)
-            if self.global_step % log_interval == 0:
-                gpu_summary = self.gpu_monitor.get_summary()
-                time_summary = self.timer.get_summary()
-                
-                logger.info(
-                    f"[Step {self.global_step}] "
-                    f"Loss: {loss.item():.4f} (avg: {loss_meter.avg:.4f}) | "
-                    f"LR: {current_lr:.2e} | "
-                    f"GPU: {gpu_summary} | "
-                    f"Time: {time_summary['elapsed']} (ETA: {time_summary['eta']})"
-                )
-            
-            # GPU 상태 로깅
-            self.gpu_monitor.log_gpu_status(self.global_step)
-            
-            # 체크포인트 저장
-            save_interval = self.training_config.get('save_interval', 5000)
-            if self.global_step % save_interval == 0:
-                self.save_checkpoint(f'step_{self.global_step}')
+
+            # Global step은 optimizer step 기준
+            if (batch_idx + 1) % accumulation_steps == 0:
+                self.global_step += 1
+                self.timer.step()
+
+            # Progress bar 업데이트 (rank 0만)
+            if self.rank == 0:
+                current_lr = self.optimizer.param_groups[0]['lr']
+                pbar.set_postfix({
+                    'loss': f'{actual_loss:.4f}',
+                    'avg': f'{loss_meter.avg:.4f}',
+                    'lr': f'{current_lr:.2e}',
+                    'ms/batch': f'{batch_time*1000:.0f}',
+                })
+
+            # 상세 로깅 (rank 0만)
+            if self.rank == 0:
+                log_interval = self.training_config.get('log_interval', 100)
+                if self.global_step > 0 and self.global_step % log_interval == 0:
+                    gpu_summary = self.gpu_monitor.get_summary()
+                    time_summary = self.timer.get_summary()
+
+                    logger.info(
+                        f"[Step {self.global_step}] "
+                        f"Loss: {actual_loss:.4f} (avg: {loss_meter.avg:.4f}) | "
+                        f"LR: {current_lr:.2e} | "
+                        f"GPU: {gpu_summary} | "
+                        f"Time: {time_summary['elapsed']} (ETA: {time_summary['eta']})"
+                    )
+
+                # GPU 상태 로깅
+                self.gpu_monitor.log_gpu_status(self.global_step)
+
+                # 체크포인트 저장
+                save_interval = self.training_config.get('save_interval', 5000)
+                if self.global_step > 0 and self.global_step % save_interval == 0:
+                    self.save_checkpoint(f'step_{self.global_step}')
         
         pbar.close()
-        
+
         epoch_time = self.timer.end_epoch()
-        
-        logger.info(f"Epoch {epoch} 완료: Loss={loss_meter.avg:.4f}, 시간={epoch_time:.1f}s")
-        
+
+        if self.rank == 0:
+            logger.info(f"Epoch {epoch} 완료: Loss={loss_meter.avg:.4f}, 시간={epoch_time:.1f}s")
+
         return loss_meter.avg
     
     @torch.no_grad()
@@ -374,16 +519,18 @@ class DeepLogTrainer:
         return accuracy
     
     def save_checkpoint(self, name: str):
-        """체크포인트 저장"""
+        """체크포인트 저장 (rank 0만 저장)"""
+        if self.rank != 0:
+            return  # rank 0만 저장
+
         checkpoint_path = self.checkpoint_dir / f'{name}.pt'
-        
-        # DataParallel 모델인 경우 module을 통해 접근
-        model_state = (
-            self.model.module.state_dict()
-            if isinstance(self.model, nn.DataParallel)
-            else self.model.state_dict()
-        )
-        
+
+        # DDP 또는 DataParallel 모델인 경우 module을 통해 접근
+        if isinstance(self.model, (DDP, nn.DataParallel)):
+            model_state = self.model.module.state_dict()
+        else:
+            model_state = self.model.state_dict()
+
         checkpoint = {
             'model_state_dict': model_state,
             'optimizer_state_dict': self.optimizer.state_dict(),
@@ -393,22 +540,22 @@ class DeepLogTrainer:
             'config': self.config,
             'training_history': self.training_history,
         }
-        
+
         if self.scaler is not None:
             checkpoint['scaler_state_dict'] = self.scaler.state_dict()
-        
+
         if self.scheduler is not None:
             checkpoint['scheduler_state_dict'] = self.scheduler.state_dict()
-        
+
         torch.save(checkpoint, checkpoint_path)
         logger.info(f"체크포인트 저장: {checkpoint_path}")
     
     def load_checkpoint(self, checkpoint_path: str):
         """체크포인트 로드"""
         checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        
-        # 모델 가중치 로드
-        if isinstance(self.model, nn.DataParallel):
+
+        # 모델 가중치 로드 (DDP 또는 DataParallel 처리)
+        if isinstance(self.model, (DDP, nn.DataParallel)):
             self.model.module.load_state_dict(checkpoint['model_state_dict'])
         else:
             self.model.load_state_dict(checkpoint['model_state_dict'])
@@ -699,12 +846,16 @@ def main():
                        help='배치 크기')
     parser.add_argument('--lr', type=float, default=None,
                        help='학습률')
-    
+
     args = parser.parse_args()
-    
+
+    # DDP 초기화
+    rank, world_size, local_rank = setup_distributed()
+    is_main_process = (rank == 0)
+
     # 설정 로드
     config = load_config(args.config)
-    
+
     # 명령줄 인자로 설정 덮어쓰기
     if args.data_dir:
         config['data']['preprocessed_dir'] = args.data_dir
@@ -716,46 +867,57 @@ def main():
         config['training']['batch_size'] = args.batch_size
     if args.lr:
         config['training']['learning_rate'] = args.lr
-    
-    # 로깅 설정 (base_dir에 로그 저장)
-    output_config = config.get('output', {})
-    base_dir = Path(output_config.get('base_dir', '/home/zzangdol/silverw/deeplog'))
-    output_dir = Path(output_config.get('dir', '/home/zzangdol/silverw/deeplog/output'))
-    base_dir.mkdir(parents=True, exist_ok=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    log_file = base_dir / output_config.get('log_file', 'training.log')
-    setup_logging(str(log_file))
-    
+
+    # 로깅 설정 (rank 0만)
+    if is_main_process:
+        output_config = config.get('output', {})
+        base_dir = Path(output_config.get('base_dir', '/home/zzangdol/silverw/deeplog'))
+        output_dir = Path(output_config.get('dir', '/home/zzangdol/silverw/deeplog/output'))
+        base_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        log_file = base_dir / output_config.get('log_file', 'training.log')
+        setup_logging(str(log_file))
+
     # 데이터 파일 목록
     data_dir = config['data']['preprocessed_dir']
     file_pattern = config['data'].get('file_pattern', 'preprocessed_logs_*.json')
     data_files = get_data_files(data_dir, file_pattern)
-    
+
     if not data_files:
-        logger.error("데이터 파일을 찾을 수 없습니다!")
+        if is_main_process:
+            logger.error("데이터 파일을 찾을 수 없습니다!")
         return
-    
-    # DataLoader 생성
-    logger.info("데이터 로더 생성 중...")
-    train_loader, val_loader = create_dataloaders(
-        data_files=data_files,
-        config=config,
-        validation_split=config['data'].get('validation_split', 0.1),
-    )
-    
-    # 학습기 생성
-    trainer = DeepLogTrainer(config)
-    
-    # 체크포인트에서 재개
-    if args.resume:
-        trainer.load_checkpoint(args.resume)
-    
-    # 학습 시작
-    trainer.train(
-        train_loader=train_loader,
-        val_loader=val_loader,
-        num_epochs=args.epochs or config['training']['num_epochs'],
-    )
+
+    try:
+        # DataLoader 생성 (DDP 지원)
+        if is_main_process:
+            logger.info("데이터 로더 생성 중...")
+
+        train_loader, val_loader = create_dataloaders(
+            data_files=data_files,
+            config=config,
+            validation_split=config['data'].get('validation_split', 0.1),
+            rank=rank,
+            world_size=world_size,
+        )
+
+        # 학습기 생성 (DDP 지원)
+        trainer = DeepLogTrainer(config, rank=rank, world_size=world_size, local_rank=local_rank)
+
+        # 체크포인트에서 재개
+        if args.resume:
+            trainer.load_checkpoint(args.resume)
+
+        # 학습 시작
+        trainer.train(
+            train_loader=train_loader,
+            val_loader=val_loader,
+            num_epochs=args.epochs or config['training']['num_epochs'],
+        )
+
+    finally:
+        # DDP 정리
+        cleanup_distributed()
 
 
 if __name__ == '__main__':

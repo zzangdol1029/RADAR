@@ -462,56 +462,101 @@ def create_dataloaders(
     data_files: List[str],
     config: Dict[str, Any],
     validation_split: float = 0.1,
+    rank: int = 0,
+    world_size: int = 1,
 ) -> tuple:
     """
     학습/검증 DataLoader 생성
-    
+
+    자동으로 파일 형식을 감지하여 최적의 데이터셋 사용:
+    - .parquet → ParquetLogDataset (10-20배 빠름)
+    - .json → LazyLogDataset (하위 호환성)
+
     Args:
         data_files: 데이터 파일 리스트
         config: 설정 딕셔너리
         validation_split: 검증 데이터 비율
-    
+        rank: DDP rank (기본값: 0)
+        world_size: DDP world size (기본값: 1)
+
     Returns:
         (train_dataloader, val_dataloader) 튜플
     """
     # 설정 추출
     data_config = config.get('data', {})
     training_config = config.get('training', {})
-    
+
     max_seq_length = data_config.get('max_seq_length', 512)
     vocab_size = config.get('model', {}).get('vocab_size', 10000)
     batch_size = training_config.get('batch_size', 64)
     num_workers = training_config.get('num_workers', 4)
-    
+
     lazy_config = data_config.get('lazy_loading', {})
     buffer_size = lazy_config.get('buffer_size', 10000)
     shuffle_buffer = lazy_config.get('shuffle_buffer', True)
-    
+
+    # 파일 형식 감지 (첫 번째 파일 기준)
+    if not data_files:
+        raise ValueError("데이터 파일 목록이 비어있습니다.")
+
+    file_ext = Path(data_files[0]).suffix.lower()
+    use_parquet = (file_ext == '.parquet')
+
+    if use_parquet:
+        logger.info("🚀 Parquet 데이터셋 사용 (고속 I/O)")
+        try:
+            from dataset_parquet import ParquetLogDataset, InMemoryParquetDataset
+        except ImportError:
+            logger.error("dataset_parquet.py를 찾을 수 없습니다. JSON 데이터셋으로 폴백합니다.")
+            use_parquet = False
+
+    if not use_parquet:
+        logger.info("JSON 데이터셋 사용 (Lazy Loading)")
+
     # 파일을 학습/검증으로 분리
     random.shuffle(data_files)
     val_count = max(1, int(len(data_files) * validation_split))
     val_files = data_files[:val_count]
     train_files = data_files[val_count:]
-    
+
     logger.info(f"학습 파일: {len(train_files)}, 검증 파일: {len(val_files)}")
-    
-    # 학습 데이터셋 (Lazy Loading)
-    train_dataset = LazyLogDataset(
-        data_files=train_files,
-        max_seq_length=max_seq_length,
-        buffer_size=buffer_size,
-        shuffle_buffer=shuffle_buffer,
-        vocab_size=vocab_size,
-    )
-    
-    # 검증 데이터셋 (메모리 로드 - 검증 데이터는 보통 작음)
-    val_dataset = InMemoryLogDataset(
-        data_files=val_files,
-        max_seq_length=max_seq_length,
-        vocab_size=vocab_size,
-        max_samples=50000,  # 검증용 최대 샘플 수 제한
-    )
-    
+
+    # 학습 데이터셋 생성
+    if use_parquet:
+        train_dataset = ParquetLogDataset(
+            data_files=train_files,
+            max_seq_length=max_seq_length,
+            vocab_size=vocab_size,
+            buffer_size=buffer_size,
+            shuffle_buffer=shuffle_buffer,
+            world_size=world_size,
+            rank=rank,
+        )
+        val_dataset = InMemoryParquetDataset(
+            data_files=val_files,
+            max_seq_length=max_seq_length,
+            vocab_size=vocab_size,
+            max_samples=50000,
+        )
+    else:
+        train_dataset = LazyLogDataset(
+            data_files=train_files,
+            max_seq_length=max_seq_length,
+            buffer_size=buffer_size,
+            shuffle_buffer=shuffle_buffer,
+            vocab_size=vocab_size,
+        )
+        # DDP 지원 (IterableDataset)
+        train_dataset.world_size = world_size
+        train_dataset.rank = rank
+
+        val_dataset = InMemoryLogDataset(
+            data_files=val_files,
+            max_seq_length=max_seq_length,
+            vocab_size=vocab_size,
+            max_samples=50000,
+        )
+
     # DataLoader 생성
     train_loader = DataLoader(
         train_dataset,
@@ -520,8 +565,10 @@ def create_dataloaders(
         pin_memory=True,
         collate_fn=collate_fn,
         prefetch_factor=training_config.get('prefetch_factor', 2) if num_workers > 0 else None,
+        persistent_workers=training_config.get('persistent_workers', False) if num_workers > 0 else False,
+        drop_last=True,  # DDP에서 마지막 불완전한 배치 제거
     )
-    
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
@@ -529,6 +576,7 @@ def create_dataloaders(
         num_workers=num_workers,
         pin_memory=True,
         collate_fn=collate_fn,
+        drop_last=False,  # 검증에서는 모든 데이터 사용
     )
-    
+
     return train_loader, val_loader
