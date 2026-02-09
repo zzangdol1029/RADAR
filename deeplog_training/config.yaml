@@ -11,8 +11,8 @@ model:
 
 # 학습 설정
 training:
-  batch_size: 1024            # 배치 크기 (4 GPU, GPU당 256)
-  learning_rate: 0.002        # 초기 학습률 (batch 1024에 최적화)
+  batch_size: 512             # 배치 크기 (4 GPU, GPU당 128)
+  learning_rate: 0.001        # 초기 학습률 (batch 512에 최적화)
   weight_decay: 0.0001        # 가중치 감쇠 (L2 정규화)
   num_epochs: 50              # 총 에폭 수
   max_grad_norm: 1.0          # Gradient Clipping 최대값
@@ -20,11 +20,11 @@ training:
   # 스케줄러 설정
   scheduler_type: "reduce_on_plateau"      # 스케줄러를 ReduceLROnPlateau로 변경
   min_lr: 0.000001            # 최소 학습률
-  warmup_steps: 2000          # 워밍업 스텝 수 (큰 배치에 맞춰 증가)
+  warmup_steps: 1000          # 워밍업 스텝 수 (batch 512에 맞춰 조정)
   
   # 로깅 설정
-  log_interval: 100           # 배치별 로그 출력 간격
-  save_interval: 2500         # 체크포인트 저장 간격 (스텝)
+  log_interval: 50            # 배치별 로그 출력 간격
+  save_interval: 1500         # 체크포인트 저장 간격 (스텝)
   
   # Early Stopping 설정 (비활성화됨)
   early_stopping:
@@ -56,7 +56,7 @@ data:
   # Lazy Loading 설정
   lazy_loading:
     enabled: true
-    buffer_size: 20000       # 메모리에 유지할 샘플 수 (배치 크기에 맞춰 증가)
+    buffer_size: 10000       # 메모리에 유지할 샘플 수 (batch 512에 맞춰 조정)
     shuffle_buffer: true     # 버퍼 내 셔플 여부
 
 # 출력 설정
