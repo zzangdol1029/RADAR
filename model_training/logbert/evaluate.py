@@ -447,10 +447,10 @@ def main():
     
     args = parser.parse_args()
     
-    # 1. 체크포인트 이름 추출 및 출력 경로 설정 (ratio 포함)
+    # 1. 체크포인트 이름 추출 및 출력 경로 설정
     checkpoint_path = Path(args.checkpoint)
     checkpoint_name = checkpoint_path.stem 
-    output_dir = Path(args.output_dir) / f"{checkpoint_name}_ratio_{args.anomaly_ratio}"
+    output_dir = Path(args.output_dir) / checkpoint_name
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # 2. 로그 파일 설정
