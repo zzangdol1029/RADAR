@@ -356,10 +356,21 @@ class DeepLogTrainer:
         try:
             total_steps = len(train_loader) * num_epochs
         except TypeError:
-            # Lazy loading dataset의 경우 추정
-            estimated_samples = train_loader.dataset.get_total_samples() if hasattr(train_loader.dataset, 'get_total_samples') else 1000000
+            # Lazy loading dataset의 경우 빠른 추정 사용
+            # get_total_samples() 호출은 느릴 수 있으므로 고정 추정치 사용
             batch_size = self.training_config.get('batch_size', 64)
+            
+            # 데이터 파일 수와 평균 파일 크기로 추정
+            # 120GB / 100개 파일 = ~1.2GB/파일
+            # 1.2GB / 800 bytes/sample = ~1,500,000 samples/파일
+            num_files = len(train_loader.dataset.data_files) if hasattr(train_loader.dataset, 'data_files') else 50
+            estimated_samples_per_file = 1500000  # 보수적 추정
+            estimated_samples = num_files * estimated_samples_per_file
+            
             total_steps = (estimated_samples // batch_size) * num_epochs
+            
+            logger.info(f"총 스텝 추정치 사용: {total_steps:,} (파일 {num_files}개 기준)")
+            logger.info(f"  → 이 값은 ETA 계산에만 사용되며 학습엔 영향 없음")
         
         self.timer.total_steps = total_steps
         self.timer.total_epochs = num_epochs

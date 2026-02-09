@@ -19,6 +19,8 @@ import random
 import os
 import mmap
 from collections import deque
+import pickle
+import time
 import ijson  # 스트리밍 JSON 파싱을 위해
 
 logger = logging.getLogger(__name__)
@@ -76,34 +78,73 @@ class LazyLogDataset(IterableDataset):
         logger.info(f"  - 버퍼 셔플: {shuffle_buffer}")
     
     def _count_samples_in_file(self, file_path: str) -> int:
-        """파일 내 샘플 수 카운트 (빠른 스캔)"""
+        """파일 내 샘플 수 카운트 (빠른 파일 크기 기반 추정)"""
         if file_path in self._file_sample_counts:
             return self._file_sample_counts[file_path]
         
-        count = 0
+        # 캐시 파일 경로
+        cache_file = f"{file_path}.sample_count.cache"
+        
+        # 1. 캐시가 있고 최신이면 사용
+        if os.path.exists(cache_file):
+            try:
+                file_mtime = os.path.getmtime(file_path)
+                cache_mtime = os.path.getmtime(cache_file)
+                
+                if cache_mtime >= file_mtime:
+                    with open(cache_file, 'r') as f:
+                        count = int(f.read().strip())
+                        self._file_sample_counts[file_path] = count
+                        logger.debug(f"캐시에서 샘플 수 로드: {file_path} → {count:,}")
+                        return count
+            except Exception as e:
+                logger.debug(f"캐시 로드 실패: {e}")
+        
+        # 2. 파일 크기 기반 빠른 추정 (기본 전략)
+        file_size = os.path.getsize(file_path)
+        
+        # 평균 샘플 크기 추정 (JSON 포맷 기준)
+        # 실제 프로젝트에서 측정한 값으로 보정 가능
+        avg_sample_size = 800  # bytes (보수적 추정)
+        
+        count = max(1, file_size // avg_sample_size)
+        
+        logger.debug(f"파일 크기 기반 추정: {file_path} → {count:,} 샘플 ({file_size:,} bytes)")
+        
+        # 3. 캐시 저장 (비동기적으로 나중에 저장 가능)
         try:
-            with open(file_path, 'rb') as f:
-                # ijson을 사용한 스트리밍 카운트
-                for _ in ijson.items(f, 'item'):
-                    count += 1
+            with open(cache_file, 'w') as f:
+                f.write(str(count))
         except Exception as e:
-            logger.warning(f"파일 카운트 실패: {file_path} - {e}")
-            # 대체 방법: 파일 크기 기반 추정
-            file_size = os.path.getsize(file_path)
-            avg_sample_size = 500  # 예상 평균 샘플 크기 (bytes)
-            count = file_size // avg_sample_size
+            logger.debug(f"캐시 저장 실패: {e}")
         
         self._file_sample_counts[file_path] = count
         return count
     
-    def get_total_samples(self) -> int:
-        """전체 샘플 수 반환 (추정치)"""
+    def get_total_samples(self, force_estimate: bool = True) -> int:
+        """전체 샘플 수 반환 (추정치)
+        
+        Args:
+            force_estimate: True면 정확한 카운트 대신 빠른 추정치 사용
+        """
         if self._total_samples is None:
+            start_time = time.time()
             total = 0
-            for file_path in self.data_files:
+            
+            logger.info(f"샘플 수 추정 중... ({len(self.data_files)} 파일)")
+            
+            for i, file_path in enumerate(self.data_files):
                 total += self._count_samples_in_file(file_path)
+                
+                # 진행 상황 로그 (파일이 많을 때)
+                if (i + 1) % 10 == 0:
+                    elapsed = time.time() - start_time
+                    logger.info(f"  진행: {i+1}/{len(self.data_files)} 파일 ({elapsed:.1f}s)")
+            
             self._total_samples = total
-            logger.info(f"전체 샘플 수 (추정): {self._total_samples:,}")
+            elapsed = time.time() - start_time
+            logger.info(f"전체 샘플 수 (추정): {self._total_samples:,} (소요 시간: {elapsed:.2f}s)")
+        
         return self._total_samples
     
     def _stream_samples_from_file(self, file_path: str) -> Generator[Dict, None, None]:
