@@ -107,16 +107,18 @@ class DeepLogTrainer:
         self.gpu_monitor = GPUMonitor(log_interval=monitoring_config.get('gpu_log_interval', 50))
         self.timer = TrainingTimer()
         
-        # Early Stopping (현재 비활성화됨)
-        # es_config = self.training_config.get('early_stopping', {})
-        self.early_stopping = None
-        # if es_config.get('enabled', True):
-        #     self.early_stopping = EarlyStopping(
-        #         patience=es_config.get('patience', 5),
-        #         min_delta=es_config.get('min_delta', 0.0001),
-        #         mode='min',
-        #         restore_best=True
-        #     )
+
+        # 변경: 활성화
+        es_config = self.training_config.get('early_stopping', {})
+        if es_config.get('enabled', False):
+            self.early_stopping = EarlyStopping(
+                patience=es_config.get('patience', 10),
+                min_delta=es_config.get('min_delta', 0.0001),
+                mode='min',
+                restore_best=True
+            )
+        else:
+            self.early_stopping = None
         
         # 학습 로그
         self.training_history = {
@@ -200,7 +202,8 @@ class DeepLogTrainer:
             
             # 스케줄러 업데이트
             if hasattr(self, 'scheduler') and self.scheduler is not None:
-                self.scheduler.step()
+                if self.training_config.get('scheduler_type') != 'reduce_on_plateau':
+                    self.scheduler.step()
             
             # 통계 업데이트
             batch_time = (datetime.now() - batch_start).total_seconds()
@@ -376,6 +379,17 @@ class DeepLogTrainer:
         self.timer.total_epochs = num_epochs
         
         self.scheduler = get_lr_scheduler(self.optimizer, self.training_config, total_steps)
+
+        # 검증 후 ReduceLROnPlateau 업데이트 추가
+        if val_loader is not None:
+            val_loss = self.validate(val_loader)
+            logger.info(f"Validation Loss: {val_loss:.4f}")
+    
+            # ReduceLROnPlateau는 validation loss로 업데이트
+            if hasattr(self, 'scheduler') and self.scheduler is not None:
+                if self.training_config.get('scheduler_type') == 'reduce_on_plateau':
+                    self.scheduler.step(val_loss)  # val_loss 전달
+
         
         # 학습 시작 로그
         print_training_banner(self.config)
@@ -640,6 +654,45 @@ def main():
         val_loader=val_loader,
         num_epochs=args.epochs or config['training']['num_epochs'],
     )
+
+@torch.no_grad()
+def calculate_topg_accuracy(self, val_loader, g: int = 9) -> float:
+    """DeepLog Top-g Accuracy 계산
+    
+    Args:
+        val_loader: 검증 데이터 로더
+        g: 상위 g개 예측 후보 (논문에서는 g=9)
+    
+    Returns:
+        Top-g Accuracy (0.0 ~ 1.0)
+    """
+    self.model.eval()
+    correct = 0
+    total = 0
+    
+    for batch in tqdm(val_loader, desc="Top-g Accuracy", leave=False):
+        input_ids = batch['input_ids'].to(self.device)
+        labels = batch['labels'].to(self.device)
+        
+        outputs = self.model(input_ids=input_ids)
+        logits = outputs['logits']  # [batch, seq_len, vocab_size]
+        
+        # 각 위치에서 상위 g개 예측
+        _, top_indices = torch.topk(logits, k=g, dim=-1)  # [batch, seq_len, g]
+        
+        # 정답이 상위 g개 안에 있는지 확인
+        labels_expanded = labels.unsqueeze(-1).expand_as(top_indices)
+        matches = (top_indices == labels_expanded).any(dim=-1)  # [batch, seq_len]
+        
+        # padding 제외
+        valid_mask = (labels != -100)
+        correct += (matches & valid_mask).sum().item()
+        total += valid_mask.sum().item()
+    
+    accuracy = correct / total if total > 0 else 0.0
+    return accuracy
+
+
 
 
 if __name__ == '__main__':
