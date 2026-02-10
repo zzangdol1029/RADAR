@@ -11,88 +11,56 @@ model:
 
 # 학습 설정
 training:
-  # 기본 하이퍼파라미터
-  batch_size: 512                      # GPU당 배치 크기
-  gradient_accumulation_steps: 4       # 🆕 Gradient Accumulation (512*4*4=8192 effective batch)
-  learning_rate: 0.001                 # 초기 학습률
-  weight_decay: 0.0001                 # 가중치 감쇠 (L2 정규화)
-  num_epochs: 50                       # 총 에폭 수
-  max_grad_norm: 1.0                   # Gradient Clipping 최대값
-
-  # 스케줄러 설정
-  scheduler_type: "reduce_on_plateau"  # ReduceLROnPlateau 사용
-  min_lr: 0.000001                     # 최소 학습률
-  warmup_steps: 1000                   # 워밍업 스텝
-
-  # 로깅 설정
-  log_interval: 100                    # 배치별 로그 출력 간격
-  save_interval: 3000                  # 체크포인트 저장 간격 (스텝)
+  batch_size: 256            # 배치 크기 (4 GPU 기준, GPU당 64)
+  learning_rate: 0.001       # 초기 학습률
+  weight_decay: 0.0001       # 가중치 감쇠 (L2 정규화)
+  num_epochs: 50             # 총 에폭 수
+  max_grad_norm: 1.0         # Gradient Clipping 최대값
   
-  # ✅ Early Stopping 설정 (활성화)
+  # 스케줄러 설정
+  scheduler_type: "cosine"   # 스케줄러 타입: cosine, step, reduce_on_plateau
+  min_lr: 0.000001           # 최소 학습률
+  warmup_steps: 1000         # 워밍업 스텝 수
+  
+  # 로깅 설정
+  log_interval: 100          # 배치별 로그 출력 간격
+  save_interval: 5000        # 체크포인트 저장 간격 (스텝)
+  
+  # Early Stopping 설정
   early_stopping:
-    enabled: true             # Early Stopping 활성화
-    patience: 5               # 5 에폭 동안 개선 없으면 종료
-    min_delta: 0.0001         # 개선으로 간주되는 최소 변화량
-
-  # ✅ ReduceLROnPlateau 파라미터
-  lr_scheduler:
-    factor: 0.5               # 학습률 감소 비율 (1/2로 감소)
-    patience: 2               # 2 에폭 개선 없으면 학습률 감소 (Early Stopping보다 짧게)
-    min_lr: 0.000001          # 최소 학습률
-    threshold: 0.0001         # 개선 판단 임계값
+    enabled: true
+    patience: 5              # 개선 없이 지속될 수 있는 에폭 수
+    min_delta: 0.0001        # 개선으로 간주되는 최소 변화량
 
   # GPU 설정
-  use_multi_gpu: true                  # 멀티 GPU 사용 여부
-  use_ddp: true                        # 🆕 DistributedDataParallel 사용 (DataParallel 대신)
-  mixed_precision: true                # Mixed Precision Training (FP16)
-
+  use_multi_gpu: true        # 멀티 GPU 사용 여부
+  mixed_precision: true      # Mixed Precision Training (FP16)
+  
   # 데이터 로더 설정
-  num_workers: 8                       # 🔄 데이터 로딩 워커 수 (DDP에서는 프로세스당)
-  prefetch_factor: 6                   # 🔄 프리페치 팩터 증가
-  persistent_workers: true             # 🆕 워커 재사용 (에폭 간)
-
-  # H100 최적화 (조건부 - A100/H100 환경에서만 활성화)
-  h100_optimizations:
-    enabled: false                     # H100 환경에서 true로 변경
-    compile_model: false               # torch.compile (PyTorch 2.0+)
-    use_fp8: false                     # FP8 학습 (Transformer Engine)
-    use_cuda_graphs: false             # CUDA Graphs
+  num_workers: 4             # 데이터 로딩 워커 수
+  prefetch_factor: 2         # 프리페치 팩터
 
 # 데이터 설정
 data:
-  # 🔄 Parquet 사용 (10-20배 빠른 I/O) - JSON에서 변환 후 경로 업데이트
-  preprocessed_dir: "/home/zzangdol/RADAR/preprocessing/output_parquet"
-  # JSON 폴백 (하위 호환성)
-  preprocessed_dir_json: "/home/zzangdol/RADAR/preprocessing/output"
-
-  max_seq_length: 512                  # 최대 시퀀스 길이
-  validation_split: 0.1                # 검증 데이터 비율 (10%)
-
-  # 파일 패턴
-  file_pattern: "*.parquet"            # 🔄 Parquet 패턴
-  file_pattern_json: "preprocessed_logs_*.json"  # JSON 폴백
-
+  preprocessed_dir: "/home/zzangdol/RADAR/preprocessing/output"  # 전처리된 데이터 디렉토리
+  max_seq_length: 512        # 최대 시퀀스 길이
+  validation_split: 0.1      # 검증 데이터 비율
+  file_pattern: "preprocessed_logs_*.json"  # 데이터 파일 패턴
+  
   # Lazy Loading 설정
   lazy_loading:
     enabled: true
-    buffer_size: 20000                 # 🔄 버퍼 크기 증가 (더 나은 셔플링)
-    shuffle_buffer: true
+    buffer_size: 10000       # 메모리에 유지할 샘플 수
+    shuffle_buffer: true     # 버퍼 내 셔플 여부
 
 # 출력 설정
 output:
-  base_dir: "/home/zzangdol/silverw/deeplog"
-  dir: "/home/zzangdol/silverw/deeplog/output"
-  checkpoint_dir: "checkpoints"
-  log_file: "training.log"
-  eval_dir: "/home/zzangdol/silverw/deeplog"
+  dir: "outputs"             # 출력 디렉토리
+  checkpoint_dir: "checkpoints"  # 체크포인트 저장 디렉토리
+  log_file: "training.log"   # 학습 로그 파일
 
 # 모니터링 설정
 monitoring:
-  gpu_log_interval: 50
-  use_tensorboard: false
-  tensorboard_dir: "runs"
-
-#  Top-g Accuracy 평가 설정 추가
-evaluation:
-  top_g: 9                    # DeepLog 논문 기준 g=9
-  eval_interval: 1            # 매 에폭마다 평가
+  gpu_log_interval: 50       # GPU 상태 로깅 간격 (배치)
+  use_tensorboard: false     # TensorBoard 사용 여부
+  tensorboard_dir: "runs"    # TensorBoard 로그 디렉토리
