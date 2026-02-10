@@ -337,9 +337,14 @@ class InMemoryLogDataset(Dataset):
         """데이터 로드"""
         total_loaded = 0
         
-        for file_path in data_files:
+        logger.info(f"검증 데이터 로딩 시작: {len(data_files)}개 파일 (최대 {max_samples:,} 샘플)")
+        
+        for idx, file_path in enumerate(data_files, 1):
             if max_samples and total_loaded >= max_samples:
                 break
+            
+            logger.info(f"[{idx}/{len(data_files)}] 파일 로드 중: {Path(file_path).name}")
+            file_start = total_loaded
             
             try:
                 with open(file_path, 'rb') as f:
@@ -353,6 +358,10 @@ class InMemoryLogDataset(Dataset):
                             if token_ids:
                                 self.samples.append(session)
                                 total_loaded += 1
+                                
+                                # 진행 상황 로그 (10000 샘플마다)
+                                if total_loaded % 10000 == 0:
+                                    logger.info(f"  → {total_loaded:,} 샘플 로드됨...")
                     except ImportError:
                         f.seek(0)
                         import json
@@ -364,8 +373,17 @@ class InMemoryLogDataset(Dataset):
                             if token_ids:
                                 self.samples.append(session)
                                 total_loaded += 1
+                                
+                                if total_loaded % 10000 == 0:
+                                    logger.info(f"  → {total_loaded:,} 샘플 로드됨...")
+                
+                file_samples = total_loaded - file_start
+                logger.info(f"  완료: {file_samples:,} 샘플 로드 (누적: {total_loaded:,})")
+                
             except Exception as e:
                 logger.error(f"파일 로드 오류: {file_path} - {e}")
+        
+        logger.info(f"검증 데이터 로딩 완료: 총 {total_loaded:,} 샘플")
     
     def __len__(self) -> int:
         return len(self.samples)
@@ -455,6 +473,7 @@ def create_dataloaders(
     logger.info(f"학습 파일: {len(train_files)}, 검증 파일: {len(val_files)}")
     
     # 학습 데이터셋 (Lazy Loading)
+    logger.info("학습 데이터셋(LazyLogDataset) 초기화 중...")
     train_dataset = LazyLogDataset(
         data_files=train_files,
         max_seq_length=max_seq_length,
@@ -462,14 +481,17 @@ def create_dataloaders(
         shuffle_buffer=shuffle_buffer,
         vocab_size=vocab_size,
     )
+    logger.info("학습 데이터셋 초기화 완료")
     
     # 검증 데이터셋 (메모리 로드 - 검증 데이터는 보통 작음)
+    logger.info(f"검증 데이터셋(InMemoryLogDataset) 초기화 중... (최대 {50000:,} 샘플)")
     val_dataset = InMemoryLogDataset(
         data_files=val_files,
         max_seq_length=max_seq_length,
         vocab_size=vocab_size,
         max_samples=50000,  # 검증용 최대 샘플 수 제한
     )
+    logger.info("검증 데이터셋 초기화 완료")
     
     # DataLoader 생성
     train_loader = DataLoader(

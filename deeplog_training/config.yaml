@@ -28,9 +28,9 @@ training:
   
   # Early Stopping 설정 (활성화됨)
   early_stopping:
-  enabled: true
-  patience: 5              # 개선 없이 지속될 수 있는 에폭 수
-  min_delta: 0.0001        # 개선으로 간주되는 최소 변화량
+    enabled: true
+    patience: 5              # 개선 없이 지속될 수 있는 에폭 수
+    min_delta: 0.0001        # 개선으로 간주되는 최소 변화량
 
   # GPU 설정
   use_multi_gpu: true        # 멀티 GPU 사용 여부

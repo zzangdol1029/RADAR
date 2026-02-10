@@ -26,7 +26,7 @@ import logging
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 
 from model import DeepLog, create_deeplog_model
@@ -94,7 +94,7 @@ class DeepLogTrainer:
         
         # Mixed Precision
         self.use_amp = self.training_config.get('mixed_precision', True) and torch.cuda.is_available()
-        self.scaler = GradScaler() if self.use_amp else None
+        self.scaler = GradScaler(device='cuda') if self.use_amp else None
         logger.info(f"Mixed Precision (FP16): {self.use_amp}")
         
         # 학습 상태
@@ -108,9 +108,10 @@ class DeepLogTrainer:
         self.timer = TrainingTimer()
         
         # Early Stopping (현재 활성화됨)
-         es_config = self.training_config.get('early_stopping', {})
+        es_config = self.training_config.get('early_stopping', {})
         self.early_stopping = None
-        if es_config.get('enabled', True):
+        # es_config가 dict 형태인지 한 번 더 체크하여 안전성 확보
+        if isinstance(es_config, dict) and es_config.get('enabled', True):
             self.early_stopping = EarlyStopping(
                 patience=es_config.get('patience', 5),
                 min_delta=es_config.get('min_delta', 0.0001),
@@ -156,7 +157,7 @@ class DeepLogTrainer:
             self.optimizer.zero_grad()
             
             if self.use_amp:
-                with autocast():
+                with autocast(device_type='cuda'):
                     outputs = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
@@ -266,7 +267,7 @@ class DeepLogTrainer:
             labels = batch['labels'].to(self.device)
             
             if self.use_amp:
-                with autocast():
+                with autocast(device_type='cuda'):
                     outputs = self.model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
@@ -609,26 +610,33 @@ def main():
         return
     
     # DataLoader 생성
-    logger.info("데이터 로더 생성 중...")
+    logger.info(f"데이터 로더 생성 중... (학습 파일: {len(data_files)}개)")
+    logger.info("학습/검증 데이터셋 초기화 시작...")
     train_loader, val_loader = create_dataloaders(
         data_files=data_files,
         config=config,
         validation_split=config['data'].get('validation_split', 0.1),
     )
+    logger.info("데이터 로더 생성 완료!")
     
     # 학습기 생성
+    logger.info("DeepLogTrainer 초기화 중...")
     trainer = DeepLogTrainer(config)
+    logger.info("DeepLogTrainer 초기화 완료!")
     
     # 체크포인트에서 재개
     if args.resume:
+        logger.info(f"체크포인트에서 재개: {args.resume}")
         trainer.load_checkpoint(args.resume)
     
     # 학습 시작
+    logger.info("학습 시작 준비 완료, trainer.train() 호출...")
     trainer.train(
         train_loader=train_loader,
         val_loader=val_loader,
         num_epochs=args.epochs or config['training']['num_epochs'],
     )
+    logger.info("학습 완료!")
 
 
 if __name__ == '__main__':
