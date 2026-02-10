@@ -165,11 +165,16 @@ class DeepLog(nn.Module):
             else:
                 loss = loss_fn(logits.view(-1, self.vocab_size), labels.view(-1))
         
-        return {
+        result = {
             'loss': loss,
             'logits': logits,
-            'hidden': (h_n, c_n),
         }
+        # hidden state는 추론 시에만 반환 (DataParallel gather 호환성)
+        # h_n shape이 [num_layers, batch, hidden]이라 batch가 dim=1에 있어
+        # DataParallel의 dim=0 gather와 충돌함
+        if labels is None:
+            result['hidden'] = (h_n, c_n)
+        return result
     
     def predict_next_log(
         self,

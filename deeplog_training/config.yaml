@@ -42,11 +42,19 @@ training:
 
 # 데이터 설정
 data:
-  preprocessed_dir: "/home/zzangdol/RADAR/preprocessing/output"  # 전처리된 데이터 디렉토리
-  max_seq_length: 512        # 최대 시퀀스 길이
-  validation_split: 0.1      # 검증 데이터 비율
-  file_pattern: "preprocessed_logs_*.json"  # 데이터 파일 패턴
-  
+
+  # 🔄 Parquet 사용 (10-20배 빠른 I/O) - JSON에서 변환 후 경로 업데이트
+  preprocessed_dir: "/home/zzangdol/RADAR/preprocessing/silverw/output_parquet"
+  # JSON 폴백 (하위 호환성)
+  preprocessed_dir_json: "/home/zzangdol/RADAR/preprocessing/output"
+
+  max_seq_length: 512                  # 최대 시퀀스 길이
+  validation_split: 0.1                # 검증 데이터 비율 (10%)
+
+  # 파일 패턴
+  file_pattern: "*.parquet"            # 🔄 Parquet 패턴
+  file_pattern_json: "preprocessed_logs_*.json"  # JSON 폴백
+
   # Lazy Loading 설정
   lazy_loading:
     enabled: true
