@@ -107,16 +107,16 @@ class DeepLogTrainer:
         self.gpu_monitor = GPUMonitor(log_interval=monitoring_config.get('gpu_log_interval', 50))
         self.timer = TrainingTimer()
         
-        # Early Stopping (현재 비활성화됨)
-        # es_config = self.training_config.get('early_stopping', {})
+        # Early Stopping (현재 활성화됨)
+         es_config = self.training_config.get('early_stopping', {})
         self.early_stopping = None
-        # if es_config.get('enabled', True):
-        #     self.early_stopping = EarlyStopping(
-        #         patience=es_config.get('patience', 5),
-        #         min_delta=es_config.get('min_delta', 0.0001),
-        #         mode='min',
-        #         restore_best=True
-        #     )
+        if es_config.get('enabled', True):
+            self.early_stopping = EarlyStopping(
+                patience=es_config.get('patience', 5),
+                min_delta=es_config.get('min_delta', 0.0001),
+                mode='min',
+                restore_best=True
+            )
         
         # 학습 로그
         self.training_history = {
