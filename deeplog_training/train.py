@@ -65,10 +65,16 @@ class DeepLogTrainer:
         
         # 출력 디렉토리 설정
         output_config = config.get('output', {})
-        self.output_dir = Path(output_config.get('dir', 'outputs'))
+        self.base_dir = Path(output_config.get('base_dir', '/home/zzangdol/silverw/deeplog'))
+        self.output_dir = Path(output_config.get('dir', '/home/zzangdol/silverw/deeplog/output'))
         self.checkpoint_dir = self.output_dir / output_config.get('checkpoint_dir', 'checkpoints')
+        self.eval_dir = Path(output_config.get('eval_dir', '/home/zzangdol/silverw/deeplog'))
+        
+        # 디렉토리 생성
+        self.base_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        self.eval_dir.mkdir(parents=True, exist_ok=True)
         
         # 모델 생성
         self.model = create_deeplog_model(self.model_config)
@@ -101,16 +107,16 @@ class DeepLogTrainer:
         self.gpu_monitor = GPUMonitor(log_interval=monitoring_config.get('gpu_log_interval', 50))
         self.timer = TrainingTimer()
         
-        # Early Stopping
-        es_config = self.training_config.get('early_stopping', {})
+        # Early Stopping (현재 비활성화됨)
+        # es_config = self.training_config.get('early_stopping', {})
         self.early_stopping = None
-        if es_config.get('enabled', True):
-            self.early_stopping = EarlyStopping(
-                patience=es_config.get('patience', 5),
-                min_delta=es_config.get('min_delta', 0.0001),
-                mode='min',
-                restore_best=True
-            )
+        # if es_config.get('enabled', True):
+        #     self.early_stopping = EarlyStopping(
+        #         patience=es_config.get('patience', 5),
+        #         min_delta=es_config.get('min_delta', 0.0001),
+        #         mode='min',
+        #         restore_best=True
+        #     )
         
         # 학습 로그
         self.training_history = {
@@ -430,11 +436,64 @@ class DeepLogTrainer:
         logger.info(f"총 학습 시간: {self.timer.format_time(total_time)}")
         logger.info(f"{'='*80}")
         
-        # 학습 이력 저장
-        history_path = self.output_dir / 'training_history.json'
+        # 학습 이력 저장 (base_dir에 저장)
+        history_path = self.base_dir / 'training_history.json'
         with open(history_path, 'w', encoding='utf-8') as f:
             json.dump(self.training_history, f, indent=2)
         logger.info(f"학습 이력 저장: {history_path}")
+        
+        # 학습 완료 후 모델 성능 평가 자동 실행
+        self._run_evaluation()
+    
+    def _run_evaluation(self):
+        """학습 완료 후 모델 성능 평가 자동 실행"""
+        logger.info("\n" + "=" * 80)
+        logger.info("모델 성능 평가 시작...")
+        logger.info("=" * 80)
+        
+        try:
+            from evaluate import DeepLogEvaluator, evaluate_model
+            
+            # 최고 모델 체크포인트 경로
+            best_checkpoint = self.checkpoint_dir / 'best_model.pt'
+            
+            if not best_checkpoint.exists():
+                logger.warning(f"최고 모델 체크포인트를 찾을 수 없습니다: {best_checkpoint}")
+                return
+            
+            # 데이터 파일 목록
+            data_dir = self.data_config.get('preprocessed_dir', '')
+            file_pattern = self.data_config.get('file_pattern', 'preprocessed_logs_*.json')
+            
+            data_path = Path(data_dir)
+            data_files = sorted(data_path.glob(file_pattern))
+            
+            if not data_files:
+                data_files = sorted(data_path.glob('*.json'))
+            
+            if not data_files:
+                logger.warning(f"평가 데이터 파일을 찾을 수 없습니다: {data_dir}")
+                return
+            
+            # 평가 실행
+            results = evaluate_model(
+                checkpoint_path=str(best_checkpoint),
+                config=self.config,
+                data_files=[str(f) for f in data_files],
+                output_dir=str(self.eval_dir),
+                max_samples=50000,
+            )
+            
+            logger.info("모델 성능 평가 완료!")
+            logger.info(f"평가 결과 저장 위치: {self.eval_dir}")
+            
+        except ImportError as e:
+            logger.warning(f"평가 모듈 로드 실패: {e}")
+            logger.info("수동으로 평가하려면: python evaluate.py --checkpoint <checkpoint_path>")
+        except Exception as e:
+            logger.error(f"평가 중 오류 발생: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 def get_data_files(data_dir: str, pattern: str = "preprocessed_logs_*.json") -> List[str]:
@@ -488,8 +547,10 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
                 'max_seq_length': 512,
             },
             'output': {
-                'dir': 'outputs',
+                'base_dir': '/home/zzangdol/silverw/deeplog',
+                'dir': '/home/zzangdol/silverw/deeplog/output',
                 'checkpoint_dir': 'checkpoints',
+                'eval_dir': '/home/zzangdol/silverw/deeplog',
             },
         }
 
@@ -529,10 +590,13 @@ def main():
     if args.lr:
         config['training']['learning_rate'] = args.lr
     
-    # 로깅 설정
-    output_dir = Path(config.get('output', {}).get('dir', 'outputs'))
+    # 로깅 설정 (base_dir에 로그 저장)
+    output_config = config.get('output', {})
+    base_dir = Path(output_config.get('base_dir', '/home/zzangdol/silverw/deeplog'))
+    output_dir = Path(output_config.get('dir', '/home/zzangdol/silverw/deeplog/output'))
+    base_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
-    log_file = output_dir / config.get('output', {}).get('log_file', 'training.log')
+    log_file = base_dir / output_config.get('log_file', 'training.log')
     setup_logging(str(log_file))
     
     # 데이터 파일 목록
