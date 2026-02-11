@@ -420,7 +420,7 @@ class DeepLogTrainer:
             logger.info(
                 f"\nEpoch {epoch} 요약:\n"
                 f"  - Train Loss: {train_loss:.4f}\n"
-                f"  - Val Loss: {val_loss:.4f if val_loss else 'N/A'}\n"
+                f"  - Val Loss: {val_loss:.4f if val_loss is not None else 'N/A'}\n"
                 f"  - Best Loss: {self.best_loss:.4f}\n"
                 f"  - 경과 시간: {time_summary['elapsed']}\n"
                 f"  - 예상 남은 시간: {time_summary['eta']}"
