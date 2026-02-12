@@ -6,6 +6,7 @@ CUDA GPU, Intel XPU, CPU를 자동으로 감지하여 학습합니다.
 
 import os
 import sys
+import math
 import yaml
 import torch
 import logging
@@ -136,16 +137,17 @@ class LogBERTTrainer:
             )
             logger.info("✅ IPEX 최적화 완료!")
         
-        # 학습률 스케줄러
-        from torch.optim.lr_scheduler import CosineAnnealingLR
+        # 학습률 스케줄러 (Linear Warmup + Cosine Decay)
+        from transformers import get_cosine_schedule_with_warmup
         total_steps = int(config['training'].get('total_steps', 100000))
-        min_lr = float(config['training'].get('min_lr', 1e-6))
+        warmup_steps = int(config['training'].get('warmup_steps', 10000))
         
-        self.scheduler = CosineAnnealingLR(
+        self.scheduler = get_cosine_schedule_with_warmup(
             self.optimizer,
-            T_max=total_steps,
-            eta_min=min_lr,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps,
         )
+        logger.info(f"📈 스케줄러: Linear Warmup ({warmup_steps} steps) + Cosine Decay (총 {total_steps} steps)")
         
         # 학습 상태
         self.global_step = 0
@@ -201,6 +203,13 @@ class LogBERTTrainer:
                     if self.use_multi_gpu:
                         loss = loss.mean()
                 
+                # NaN/Inf loss 감지 시 해당 배치 스킵
+                if not torch.isfinite(loss):
+                    logger.warning(f"⚠️ [Step {self.global_step+1}] NaN/Inf loss 감지! 배치 스킵")
+                    self.optimizer.zero_grad()
+                    self.global_step += 1
+                    continue
+
                 # 가중치 업데이트 (GradScaler 활용)
                 self.scaler.scale(loss).backward()
                 self.scaler.unscale_(self.optimizer) # Clipping 전 unscale 필수
@@ -220,20 +229,29 @@ class LogBERTTrainer:
                 if self.use_multi_gpu:
                     loss = loss.mean()
 
+                # NaN/Inf loss 감지 시 해당 배치 스킵
+                if not torch.isfinite(loss):
+                    logger.warning(f"⚠️ [Step {self.global_step+1}] NaN/Inf loss 감지! 배치 스킵")
+                    self.optimizer.zero_grad()
+                    self.global_step += 1
+                    continue
+
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config['training'].get('max_grad_norm', 1.0))
                 self.optimizer.step()
             
             # 스케줄러 업데이트 및 통계 기록
             self.scheduler.step()
-            total_loss += loss.item()
-            num_batches += 1
+            loss_val = loss.item()
+            if math.isfinite(loss_val):
+                total_loss += loss_val
+                num_batches += 1
             self.global_step += 1
             
             # 진행 상황 업데이트 및 로깅
             if self.global_step % self.config['training'].get('log_interval', 100) == 0:
                 current_lr = self.scheduler.get_last_lr()[0]
-                avg_loss_val = total_loss / num_batches
+                avg_loss_val = total_loss / num_batches if num_batches > 0 else float('nan')
 
                 # 화면에 보이는 tqdm 업데이트
                 progress_bar.set_postfix({

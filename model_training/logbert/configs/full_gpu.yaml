@@ -18,10 +18,11 @@ model:
 # 학습 설정
 training:
   batch_size: 128             # GPU 메모리에 따라 조정 (32-128)
-  learning_rate: 0.0001
+  learning_rate: 0.00005      # 5e-5 (BERT 계열 권장 범위, 기존 1e-4에서 하향)
   weight_decay: 0.01
   num_epochs: 3              # 전체 학습
   total_steps: 750000
+  warmup_steps: 50000        # 전체의 ~7%, 초기 안정화를 위한 warmup
   min_lr: 0.000001
   max_grad_norm: 1.0
   mask_prob: 0.15
