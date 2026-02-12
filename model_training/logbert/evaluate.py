@@ -31,10 +31,7 @@ import seaborn as sns
 
 import platform
 
-# 한글 폰트 설정 (Windows 기준)
-if platform.system() == 'Windows':
-    plt.rcParams['font.family'] = 'Malgun Gothic'
-plt.rcParams['axes.unicode_minus'] = False # 마이너스 기호 깨짐 방지
+plt.rcParams['axes.unicode_minus'] = False
 
 # 로컬 모듈 import
 from model import create_logbert_model
@@ -356,20 +353,20 @@ def plot_score_distribution(
     plt.figure(figsize=(12, 6))
     
     plt.subplot(1, 2, 1)
-    plt.hist(normal_scores, bins=50, alpha=0.7, label='정상', color='blue', edgecolor='black')
-    plt.hist(anomaly_scores, bins=50, alpha=0.7, label='이상', color='red', edgecolor='black')
-    plt.axvline(threshold, color='green', linestyle='--', linewidth=2, label=f'임계값: {threshold:.4f}')
-    plt.xlabel('이상 점수 (Loss)')
-    plt.ylabel('빈도')
-    plt.title('정상 vs 이상 점수 분포')
+    plt.hist(normal_scores, bins=50, alpha=0.7, label='Normal', color='blue', edgecolor='black')
+    plt.hist(anomaly_scores, bins=50, alpha=0.7, label='Anomaly', color='red', edgecolor='black')
+    plt.axvline(threshold, color='green', linestyle='--', linewidth=2, label=f'Threshold: {threshold:.4f}')
+    plt.xlabel('Anomaly Score (Loss)')
+    plt.ylabel('Frequency')
+    plt.title('Normal vs Anomaly Score Distribution')
     plt.legend()
     plt.grid(True, alpha=0.3)
     
     plt.subplot(1, 2, 2)
-    plt.boxplot([normal_scores, anomaly_scores], tick_labels=['정상', '이상'])
-    plt.axhline(threshold, color='green', linestyle='--', linewidth=2, label=f'임계값: {threshold:.4f}')
-    plt.ylabel('이상 점수 (Loss)')
-    plt.title('정상 vs 이상 점수 박스플롯')
+    plt.boxplot([normal_scores, anomaly_scores], tick_labels=['Normal', 'Anomaly'])
+    plt.axhline(threshold, color='green', linestyle='--', linewidth=2, label=f'Threshold: {threshold:.4f}')
+    plt.ylabel('Anomaly Score (Loss)')
+    plt.title('Normal vs Anomaly Score Boxplot')
     plt.legend()
     plt.grid(True, alpha=0.3)
     
@@ -386,13 +383,13 @@ def plot_confusion_matrix(cm: np.ndarray, output_path: Path):
         annot=True,
         fmt='d',
         cmap='Blues',
-        xticklabels=['정상', '이상'],
-        yticklabels=['정상', '이상'],
-        cbar_kws={'label': '개수'}
+        xticklabels=['Normal', 'Anomaly'],
+        yticklabels=['Normal', 'Anomaly'],
+        cbar_kws={'label': 'Count'}
     )
-    plt.xlabel('예측')
-    plt.ylabel('실제')
-    plt.title('혼동 행렬 (Confusion Matrix)')
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.title('Confusion Matrix')
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
     logger.info(f"📊 혼동 행렬 저장: {output_path}")
