@@ -17,10 +17,17 @@ training:
   num_epochs: 50             # 총 에폭 수
   max_grad_norm: 1.0         # Gradient Clipping 최대값
   
-  # 스케줄러 설정
-  scheduler_type: "cosine"   # 스케줄러 타입: cosine, step, reduce_on_plateau
+  # 스케줄러 설정 (Early Stopping과 함께 사용)
+  scheduler_type: "reduce_on_plateau"   # 스케줄러 타입: cosine, step, reduce_on_plateau
   min_lr: 0.000001           # 최소 학습률
   warmup_steps: 1000         # 워밍업 스텝 수
+  
+  # ReduceLROnPlateau 세부 설정
+  lr_scheduler:
+    factor: 0.5              # 학습률 감소 비율 (1/2로 감소)
+    patience: 3              # 3 에폭 개선 없으면 학습률 감소
+    threshold: 0.0001        # 개선 판단 임계값
+    min_lr: 0.00001          # 최소 학습률
   
   # 로깅 설정
   log_interval: 100          # 배치별 로그 출력 간격
@@ -43,17 +50,16 @@ training:
 # 데이터 설정
 data:
 
-  # 🔄 Parquet 사용 (10-20배 빠른 I/O) - JSON에서 변환 후 경로 업데이트
-  preprocessed_dir: "/home/zzangdol/RADAR/preprocessing/silverw/output_parquet"
-  # JSON 폴백 (하위 호환성)
-  preprocessed_dir_json: "/home/zzangdol/RADAR/preprocessing/output"
+  # 데이터 경로 (JSON 사용)
+  preprocessed_dir: "/home/zzangdol/RADAR/preprocessing/output"
+  # Parquet 경로 (향후 변환 시 사용)
+  # preprocessed_dir_parquet: "/home/zzangdol/RADAR/preprocessing/silverw/output_parquet"
 
   max_seq_length: 512                  # 최대 시퀀스 길이
   validation_split: 0.1                # 검증 데이터 비율 (10%)
 
   # 파일 패턴
-  file_pattern: "*.parquet"            # 🔄 Parquet 패턴
-  file_pattern_json: "preprocessed_logs_*.json"  # JSON 폴백
+  file_pattern: "preprocessed_logs_*.json"    # JSON 패턴
 
   # Lazy Loading 설정
   lazy_loading:
