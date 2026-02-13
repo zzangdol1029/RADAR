@@ -199,9 +199,10 @@ class DeepLogTrainer:
                 )
                 self.optimizer.step()
             
-            # 스케줄러 업데이트
+            # 스케줄러 업데이트 (ReduceLROnPlateau는 에폭 단위로 처리)
             if hasattr(self, 'scheduler') and self.scheduler is not None:
-                self.scheduler.step()
+                if not getattr(self, 'scheduler_needs_metrics', False):
+                    self.scheduler.step()
             
             # 통계 업데이트
             batch_time = (datetime.now() - batch_start).total_seconds()
@@ -366,6 +367,10 @@ class DeepLogTrainer:
         self.timer.total_epochs = num_epochs
         
         self.scheduler = get_lr_scheduler(self.optimizer, self.training_config, total_steps)
+        # ReduceLROnPlateau는 에폭 단위로 metrics와 함께 호출해야 함
+        self.scheduler_needs_metrics = (
+            self.training_config.get('scheduler_type', 'cosine') == 'reduce_on_plateau'
+        )
         
         # 학습 시작 로그
         print_training_banner(self.config)
@@ -409,6 +414,11 @@ class DeepLogTrainer:
             # 에폭 체크포인트 저장
             self.save_checkpoint(f'epoch_{epoch}')
             
+            # ReduceLROnPlateau 스케줄러 에폭 단위 업데이트
+            if hasattr(self, 'scheduler') and self.scheduler is not None:
+                if getattr(self, 'scheduler_needs_metrics', False):
+                    self.scheduler.step(current_loss)
+            
             # Early Stopping 체크
             if self.early_stopping is not None:
                 if self.early_stopping(current_loss, self.model, epoch):
@@ -420,7 +430,7 @@ class DeepLogTrainer:
             logger.info(
                 f"\nEpoch {epoch} 요약:\n"
                 f"  - Train Loss: {train_loss:.4f}\n"
-                f"  - Val Loss: {val_loss:.4f if val_loss is not None else 'N/A'}\n"
+                f"  - Val Loss: {f'{val_loss:.4f}' if val_loss is not None else 'N/A'}\n"
                 f"  - Best Loss: {self.best_loss:.4f}\n"
                 f"  - 경과 시간: {time_summary['elapsed']}\n"
                 f"  - 예상 남은 시간: {time_summary['eta']}"

@@ -407,7 +407,8 @@ def get_lr_scheduler(optimizer, config: Dict[str, Any], total_steps: int):
         scheduler = None
     
     # 워밍업 스케줄러 (Linear warmup)
-    if warmup_steps > 0 and scheduler is not None:
+    # ReduceLROnPlateau는 SequentialLR로 감싸면 step(metrics) 전달이 안 되므로 제외
+    if warmup_steps > 0 and scheduler is not None and scheduler_type != 'reduce_on_plateau':
         from torch.optim.lr_scheduler import LambdaLR, SequentialLR
         
         def warmup_lambda(step):
