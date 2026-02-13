@@ -313,11 +313,9 @@ class EarlyStopping:
             self.counter = 0
             
             if self.restore_best:
-                # 최고 모델 상태 저장
-                if isinstance(model, nn.DataParallel):
-                    self.best_state_dict = {k: v.cpu().clone() for k, v in model.module.state_dict().items()}
-                else:
-                    self.best_state_dict = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                # 최고 모델 상태 저장 (DataParallel/DDP 시 module 사용)
+                target = model.module if hasattr(model, 'module') else model
+                self.best_state_dict = {k: v.cpu().clone() for k, v in target.state_dict().items()}
             
             logger.info(f"✅ 새로운 최고 성능: {score:.6f} (Epoch {epoch})")
         else:
@@ -332,12 +330,10 @@ class EarlyStopping:
         return False
     
     def restore_best_weights(self, model: nn.Module):
-        """최고 모델 가중치 복원"""
+        """최고 모델 가중치 복원 (DataParallel/DDP 지원)"""
         if self.best_state_dict is not None:
-            if isinstance(model, nn.DataParallel):
-                model.module.load_state_dict(self.best_state_dict)
-            else:
-                model.load_state_dict(self.best_state_dict)
+            target = model.module if hasattr(model, 'module') else model
+            target.load_state_dict(self.best_state_dict)
             logger.info(f"최고 모델 복원: Epoch {self.best_epoch}, Score: {self.best_score:.6f}")
 
 

@@ -9,30 +9,33 @@ model:
   num_layers: 2              # LSTM 레이어 수
   dropout: 0.2               # 드롭아웃 확률
 
-# 학습 설정
+# 학습 설정 (TRAINING_OPTIMIZATION.md 권장값 반영)
 training:
-  batch_size: 256            # 배치 크기 (4 GPU 기준, GPU당 64)
+  batch_size: 128            # 배치 크기 (DDP 4 GPU 시 GPU당 128, OOM 방지)
   learning_rate: 0.001       # 초기 학습률
   weight_decay: 0.0001       # 가중치 감쇠 (L2 정규화)
   num_epochs: 50             # 총 에폭 수
   max_grad_norm: 1.0         # Gradient Clipping 최대값
-  
+
+  # Gradient Accumulation (OOM 시 effective batch 확대용)
+  gradient_accumulation_steps: 1   # 2 이상이면 배치당 step 수만큼 누적 후 업데이트
+
   # 스케줄러 설정 (Early Stopping과 함께 사용)
   scheduler_type: "reduce_on_plateau"   # 스케줄러 타입: cosine, step, reduce_on_plateau
   min_lr: 0.000001           # 최소 학습률
   warmup_steps: 1000         # 워밍업 스텝 수
-  
+
   # ReduceLROnPlateau 세부 설정
   lr_scheduler:
     factor: 0.5              # 학습률 감소 비율 (1/2로 감소)
     patience: 3              # 3 에폭 개선 없으면 학습률 감소
     threshold: 0.0001        # 개선 판단 임계값
     min_lr: 0.00001          # 최소 학습률
-  
-  # 로깅 설정
-  log_interval: 100          # 배치별 로그 출력 간격
-  save_interval: 5000        # 체크포인트 저장 간격 (스텝)
-  
+
+  # 로깅/저장 (오버헤드 감소 권장)
+  log_interval: 500          # 배치별 로그 출력 간격
+  save_interval: 10000       # 체크포인트 저장 간격 (스텝)
+
   # Early Stopping 설정 (활성화됨)
   early_stopping:
     enabled: true
@@ -40,15 +43,18 @@ training:
     min_delta: 0.0001        # 개선으로 간주되는 최소 변화량
 
   # GPU 설정
-  use_multi_gpu: true        # 멀티 GPU 사용 여부
+  use_multi_gpu: true        # 멀티 GPU 사용 (DDP 또는 DataParallel)
   mixed_precision: true      # Mixed Precision Training (FP16)
-  
-  # 데이터 로더 설정
-  num_workers: 4             # 데이터 로딩 워커 수
-  prefetch_factor: 2         # 프리페치 팩터
+  use_compile: false        # PyTorch 2+ torch.compile (선택, 일부 환경에서 이득)
+
+  # 데이터 로더 설정 (병목 완화 권장)
+  num_workers: 8             # 데이터 로딩 워커 수
+  prefetch_factor: 4         # 프리페치 팩터
 
 # 데이터 설정
 data:
+  # 학습 데이터 전체 샘플 수 추정 (LazyLogDataset 시 ETA/스케줄러용, 미설정 시 29_200_000 사용)
+  # estimated_total_samples: 29197484
 
   # 데이터 경로 (JSON 사용)
   preprocessed_dir: "/home/zzangdol/RADAR/preprocessing/output"
@@ -77,6 +83,6 @@ output:
 
 # 모니터링 설정
 monitoring:
-  gpu_log_interval: 50       # GPU 상태 로깅 간격 (배치)
+  gpu_log_interval: 200      # GPU 상태 로깅 간격 (배치, 오버헤드 감소)
   use_tensorboard: false     # TensorBoard 사용 여부
   tensorboard_dir: "runs"    # TensorBoard 로그 디렉토리

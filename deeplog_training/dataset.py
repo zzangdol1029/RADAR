@@ -439,47 +439,49 @@ def create_dataloaders(
     data_files: List[str],
     config: Dict[str, Any],
     validation_split: float = 0.1,
+    rank: int = 0,
+    world_size: int = 1,
 ) -> tuple:
     """
-    학습/검증 DataLoader 생성
-    
+    학습/검증 DataLoader 생성 (DDP 시 rank/world_size로 데이터 분할)
+
     Args:
         data_files: 데이터 파일 리스트
         config: 설정 딕셔너리
         validation_split: 검증 데이터 비율
-    
+        rank: DDP 시 현재 프로세스 rank (0이면 메인)
+        world_size: DDP 시 총 프로세스 수 (1이면 단일 프로세스)
+
     Returns:
         (train_dataloader, val_dataloader) 튜플
     """
-    # 설정 추출
     data_config = config.get('data', {})
     training_config = config.get('training', {})
-    
+
     max_seq_length = data_config.get('max_seq_length', 512)
     vocab_size = config.get('model', {}).get('vocab_size', 10000)
     batch_size = training_config.get('batch_size', 64)
     num_workers = training_config.get('num_workers', 4)
-    
+
     lazy_config = data_config.get('lazy_loading', {})
     buffer_size = lazy_config.get('buffer_size', 10000)
     shuffle_buffer = lazy_config.get('shuffle_buffer', True)
-    
-    # 파일을 학습/검증으로 분리
+
     random.shuffle(data_files)
     val_count = max(1, int(len(data_files) * validation_split))
     val_files = data_files[:val_count]
     train_files = data_files[val_count:]
-    
-    logger.info(f"학습 파일: {len(train_files)}, 검증 파일: {len(val_files)}")
-    
-    # 학습 데이터셋 (Lazy Loading)
-    logger.info("학습 데이터셋(LazyLogDataset) 초기화 중...")
+
+    logger.info(f"학습 파일: {len(train_files)}, 검증 파일: {len(val_files)} (rank={rank}, world_size={world_size})")
+
     train_dataset = LazyLogDataset(
         data_files=train_files,
         max_seq_length=max_seq_length,
         buffer_size=buffer_size,
         shuffle_buffer=shuffle_buffer,
         vocab_size=vocab_size,
+        world_size=world_size,
+        rank=rank,
     )
     logger.info("학습 데이터셋 초기화 완료")
     
