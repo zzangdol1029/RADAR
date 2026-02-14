@@ -428,22 +428,29 @@ def get_lr_scheduler(optimizer, config: Dict[str, Any], total_steps: int):
     return scheduler
 
 
-def setup_logging(log_file: Optional[str] = None, level: int = logging.INFO):
+def setup_logging(log_file: Optional[str] = None, level: int = logging.INFO, rank: int = 0):
     """
     로깅 설정
-    
+
     Args:
         log_file: 로그 파일 경로
         level: 로깅 레벨
+        rank: DDP rank (0만 로깅, 나머지는 WARNING 이상만)
     """
-    handlers = [logging.StreamHandler()]
-    
-    if log_file:
+    handlers = []
+
+    if log_file and rank == 0:
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
         handlers.append(logging.FileHandler(log_file, encoding='utf-8'))
-    
+
+    # rank 0: 파일에 기록 + 콘솔 출력
+    # rank != 0: WARNING 이상만 콘솔 출력 (DDP 중복 로그 방지)
+    handlers.append(logging.StreamHandler())
+
+    effective_level = level if rank == 0 else logging.WARNING
+
     logging.basicConfig(
-        level=level,
+        level=effective_level,
         format='%(asctime)s | %(levelname)s | %(name)s | %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S',
         handlers=handlers,

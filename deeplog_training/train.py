@@ -652,7 +652,7 @@ def main():
     base_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     log_file = base_dir / output_config.get('log_file', 'training.log')
-    setup_logging(str(log_file))
+    setup_logging(str(log_file), rank=rank)
 
     data_dir = config['data']['preprocessed_dir']
     file_pattern = config['data'].get('file_pattern', 'preprocessed_logs_*.json')
