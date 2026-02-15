@@ -12,6 +12,7 @@ DeepLog 학습용 Lazy Loading Dataset
 import json
 import torch
 from torch.utils.data import Dataset, DataLoader, IterableDataset
+from torch.utils.data.distributed import DistributedSampler
 from typing import List, Dict, Any, Optional, Iterator, Generator
 from pathlib import Path
 import logging
@@ -467,7 +468,10 @@ def create_dataloaders(
     buffer_size = lazy_config.get('buffer_size', 10000)
     shuffle_buffer = lazy_config.get('shuffle_buffer', True)
 
-    random.shuffle(data_files)
+    # 고정 시드로 셔플 → 모든 DDP 프로세스가 동일하게 train/val 분리
+    rng = random.Random(42)
+    data_files = list(data_files)
+    rng.shuffle(data_files)
     val_count = max(1, int(len(data_files) * validation_split))
     val_files = data_files[:val_count]
     train_files = data_files[val_count:]
@@ -484,17 +488,17 @@ def create_dataloaders(
         rank=rank,
     )
     logger.info("학습 데이터셋 초기화 완료")
-    
+
     # 검증 데이터셋 (메모리 로드 - 검증 데이터는 보통 작음)
     logger.info(f"검증 데이터셋(InMemoryLogDataset) 초기화 중... (최대 {50000:,} 샘플)")
     val_dataset = InMemoryLogDataset(
         data_files=val_files,
         max_seq_length=max_seq_length,
         vocab_size=vocab_size,
-        max_samples=50000,  # 검증용 최대 샘플 수 제한
+        max_samples=50000,
     )
     logger.info("검증 데이터셋 초기화 완료")
-    
+
     # DataLoader 생성
     train_loader = DataLoader(
         train_dataset,
@@ -504,14 +508,20 @@ def create_dataloaders(
         collate_fn=collate_fn,
         prefetch_factor=training_config.get('prefetch_factor', 2) if num_workers > 0 else None,
     )
-    
+
+    # 검증: DDP 시 DistributedSampler로 균등 분배
+    val_sampler = None
+    if world_size > 1:
+        val_sampler = DistributedSampler(val_dataset, shuffle=False)
+
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
+        sampler=val_sampler,
         num_workers=num_workers,
         pin_memory=True,
         collate_fn=collate_fn,
     )
-    
+
     return train_loader, val_loader
